@@ -15,6 +15,10 @@ const paymentSchema = new mongoose.Schema({
     type: Number,
     required: true
   },
+  starsAmount: {
+    type: Number,
+    required: false
+  },
   status: { 
     type: String, 
     enum: ['pending', 'succeeded', 'canceled', 'failed'], 
@@ -22,7 +26,8 @@ const paymentSchema = new mongoose.Schema({
   },
   provider: {
     type: String,
-    default: 'yookassa'
+    enum: ['yookassa', 'telegram_stars', 'crypto'],
+    default: 'telegram_stars'
   },
   providerPaymentId: String,
   description: String,
@@ -35,9 +40,5 @@ const paymentSchema = new mongoose.Schema({
     default: Date.now
   }
 });
-
-paymentSchema.index({ user: 1 });
-paymentSchema.index({ status: 1 });
-paymentSchema.index({ createdAt: 1 });
 
 module.exports = mongoose.model('Payment', paymentSchema);
