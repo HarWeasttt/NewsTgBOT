@@ -207,8 +207,8 @@ class Application {
     console.log('🔧 Регистрация обработчиков...');
 
     // Загружаем все обработчики ПОСЛЕ команд
-    const setupAdminHandlers = require('./bot/handlers/adminHandlers');     // Админ-панель
     const setupCallbackHandlers = require('./bot/handlers/callbackHandlers'); // Inline кнопки
+    const setupAdminHandlers = require('./bot/handlers/adminHandlers');     // Админ-панель
     const setupUserHandlers = require('./bot/handlers/userHandlers');        // Пользовательское меню
 
     const setupChannelHandlers = require('./bot/handlers/channelHandlers'); // Управление каналами
@@ -217,10 +217,10 @@ class Application {
     
     console.log('🔄 Подключение adminHandlers...');
     setupAdminHandlers(this.bot);
-    console.log('🔄 Подключение userHandlers...');
-    setupUserHandlers(this.bot);
     console.log('🔄 Подключение callbackHandlers...');
     setupCallbackHandlers(this.bot);
+    console.log('🔄 Подключение userHandlers...');
+    setupUserHandlers(this.bot);
 
 
     console.log('🔄 Подключение channelHandlers...');

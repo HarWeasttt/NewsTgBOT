@@ -1039,62 +1039,115 @@ bot.action('clear_all_logs', async (ctx) => {
     }
   });
 
-  // Изменение тарифа пользователя
-  bot.action(/admin_change_plan_(.+)/, async (ctx) => {
-    if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
-      await ctx.answerCbQuery('❌ Доступ запрещен');
-      return;
-    }
+  // Изменение тарифа пользователя - ИСПРАВЛЕННАЯ ВЕРСИЯ
+bot.action(/admin_change_plan_(.+)/, async (ctx) => {
+  if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
+    await ctx.answerCbQuery('❌ Доступ запрещен');
+    return;
+  }
 
+  try {
     const userId = ctx.match[1];
+    const user = await User.findById(userId);
     
-    try {
-      const user = await User.findById(userId);
-      if (!user) {
-        await ctx.answerCbQuery('❌ Пользователь не найден');
-        return;
-      }
-
-      await ctx.editMessageText(`💎 Изменение тарифа для ${user.firstName}\n\nТекущий тариф: ${user.subscription.plan}\n\nВыберите новый тариф:`, {
-        reply_markup: {
-          inline_keyboard: [
-            Object.entries(SUBSCRIPTION_PLANS).map(([key, plan]) => 
-              [{ text: plan.name, callback_data: `admin_set_plan_${userId}_${key}` }]
-            ),
-            [{ text: '🔙 Назад', callback_data: 'admin_back' }]
-          ].flat()
-        }
-      });
-    } catch (error) {
-      console.error('Change plan error:', error);
-      await ctx.answerCbQuery('❌ Ошибка при изменении тарифа');
-    }
-  });
-
-  // Установка тарифа пользователю
-  bot.action(/admin_set_plan_(.+)_(.+)/, async (ctx) => {
-    if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
-      await ctx.answerCbQuery('❌ Доступ запрещен');
+    if (!user) {
+      await ctx.answerCbQuery('❌ Пользователь не найден');
       return;
     }
 
+    let message = `💎 Изменение тарифа для ${user.firstName}\n\n`;
+    message += `Текущий тариф: ${SUBSCRIPTION_PLANS[user.subscription.plan]?.name || user.subscription.plan}\n\n`;
+    message += `Выберите новый тариф:`;
+
+    // СОЗДАЕМ ПРАВИЛЬНЫЙ ФОРМАТ КЛАВИАТУРЫ - массив массивов
+    const keyboard = Object.entries(SUBSCRIPTION_PLANS).map(([key, plan]) => {
+      // Каждый тариф в отдельном массиве (ряду)
+      return [{ 
+        text: `${plan.name} (${plan.price > 0 ? `${plan.price} зв.` : 'Бесплатно'})`, 
+        callback_data: `set_user_plan_${userId}_${key}` 
+      }];
+    });
+
+    // Добавляем кнопку отмены в отдельный ряд
+    keyboard.push([{ text: '❌ Отмена', callback_data: 'admin_back_to_panel' }]);
+
+    await ctx.editMessageText(message, {
+      reply_markup: {
+        inline_keyboard: keyboard
+      }
+    });
+
+  } catch (error) {
+    console.error('Change plan error:', error);
+    await ctx.answerCbQuery('❌ Ошибка при изменении тарифа');
+  }
+});
+
+// Установка нового тарифа для пользователя
+bot.action(/set_user_plan_(.+)_(.+)/, async (ctx) => {
+  if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
+    await ctx.answerCbQuery('❌ Доступ запрещен');
+    return;
+  }
+
+  try {
     const userId = ctx.match[1];
     const planKey = ctx.match[2];
     
-    try {
-      const user = await UserService.updateSubscription(userId, planKey);
-      if (!user) {
-        await ctx.answerCbQuery('❌ Ошибка при изменении тарифа');
-        return;
-      }
-
-      await ctx.answerCbQuery(`✅ Тариф изменен на ${planKey}`);
-      await ctx.editMessageText(`✅ Тариф пользователя ${user.firstName} изменен на ${SUBSCRIPTION_PLANS[planKey].name}!`);
-    } catch (error) {
-      console.error('Set plan error:', error);
-      await ctx.answerCbQuery('❌ Ошибка при изменении тарифа');
+    const user = await User.findById(userId);
+    if (!user) {
+      await ctx.answerCbQuery('❌ Пользователь не найден');
+      return;
     }
-  });
+
+    const plan = SUBSCRIPTION_PLANS[planKey];
+    if (!plan) {
+      await ctx.answerCbQuery('❌ Тариф не найден');
+      return;
+    }
+
+    // Сохраняем старый тариф для истории
+    const oldPlan = user.subscription.plan;
+
+    // Обновляем подписку пользователя
+    user.subscription.plan = planKey;
+    user.subscription.isTrial = false;
+    user.subscription.startDate = new Date();
+    user.subscription.endDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 дней
+    
+    // Обновляем лимиты
+    user.limits.channels = plan.channels;
+    user.limits.postsPerDay = plan.postsPerDay;
+    user.limits.postsToday = 0; // Сбрасываем счетчик
+
+    await user.save();
+
+    await ctx.answerCbQuery(`✅ Тариф изменен на ${plan.name}`);
+
+    const message = `✅ Тариф пользователя успешно изменен!\n\n` +
+      `👤 Пользователь: ${user.firstName}${user.username ? ` (@${user.username})` : ''}\n` +
+      `📊 Старый тариф: ${SUBSCRIPTION_PLANS[oldPlan]?.name || oldPlan}\n` +
+      `🎯 Новый тариф: ${plan.name}\n` +
+      `📅 Действует до: ${user.subscription.endDate.toLocaleDateString('ru-RU')}\n\n` +
+      `📈 Новые лимиты:\n` +
+      `• Каналов: ${plan.channels}\n` +
+      `• Постов в день: ${plan.postsPerDay}\n` +
+      `• AI-генерация: ${plan.aiAccess ? '✅' : '❌'}`;
+
+    await ctx.editMessageText(message, {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '👥 К пользователям', callback_data: 'admin_users' }],
+          [{ text: '🔙 В админ-панель', callback_data: 'admin_back_to_panel' }]
+        ]
+      }
+    });
+
+  } catch (error) {
+    console.error('Set user plan error:', error);
+    await ctx.answerCbQuery('❌ Ошибка при установке тарифа');
+  }
+});
 
   // Сброс пробного периода
   bot.action(/admin_reset_trial_(.+)/, async (ctx) => {
