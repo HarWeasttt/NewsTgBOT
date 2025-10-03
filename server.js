@@ -11,45 +11,91 @@ if (!fs.existsSync('./temp')) {
   fs.mkdirSync('./temp', { recursive: true });
 }
 
+/**
+ * Главный класс приложения - управляет всем ботом
+ * Отвечает за инициализацию, подключение к БД и запуск бота
+ */
 class Application {
   constructor() {
+    // Создаем экземпляр бота с токеном из конфигурации
     this.bot = new Telegraf(BOT_CONFIG.TOKEN);
-    this.setupDatabase();
-    this.setupBot();
-    this.setupCronJobs();
+    
+    // Инициализируем все компоненты приложения
+    this.setupDatabase();    // Подключение к MongoDB
+    this.setupBot();         // Настройка бота и обработчиков
+    this.setupCronJobs();    // Запуск фоновых задач
   }
 
+  /**
+   * Подключение к базе данных MongoDB
+   * Вызывается при старте приложения
+   */
   async setupDatabase() {
     try {
+      // Устанавливаем соединение с MongoDB
       await mongoose.connect(BOT_CONFIG.MONGODB_URI);
       console.log('✅ MongoDB подключена');
     } catch (error) {
       console.error('❌ Ошибка подключения к MongoDB:', error);
-      process.exit(1);
+      process.exit(1); // Завершаем процесс при ошибке подключения к БД
     }
   }
 
+  /**
+   * Основная настройка бота - регистрация middleware и обработчиков
+   * Порядок важен: сначала middleware, потом обработчики
+   */
   setupBot() {
-    // Загружаем сцены
-    const rssSetupScene = require('./bot/scenes/rssSetupScene');
-    const aiPostScene = require('./bot/scenes/aiPostScene');
+    console.log('🔧 Настройка бота...');
+
+    // Загружаем сцены для многошаговых взаимодействий (wizard scenes)
+    const rssSetupScene = require('./bot/scenes/rssSetupScene'); // Настройка RSS
+    const aiPostScene = require('./bot/scenes/aiPostScene');     // Генерация AI постов
+    const editPlanScene = require('./bot/scenes/editPlanScene');
+  const changeAIKeyScene = require('./bot/scenes/changeAIKeyScene');
+
+    // Создаем stage для управления сценами
+    const stage = new Scenes.Stage([rssSetupScene, aiPostScene, editPlanScene, changeAIKeyScene]);
+
+    // ========== MIDDLEWARE СТЕК ==========
+    // Middleware выполняются ПОСЛЕДОВАТЕЛЬНО для каждого входящего сообщения
     
-    // Создаем stage для сцен
-    const stage = new Scenes.Stage([rssSetupScene, aiPostScene]);
-    
-    // Middleware
+    // 1. Сессии - хранение состояния между сообщениями
     this.bot.use(session());
-    this.bot.use(stage.middleware());
     
-    // Добавляем пользователя в контекст
+    // 2. Сцены - управление многошаговыми диалогами
+    this.bot.use(stage.middleware());
+
+    // 3. Логирование всех входящих сообщений
+    this.bot.use(async (ctx, next) => {
+      const now = new Date().toLocaleString('ru-RU');
+
+      // Логируем текстовые сообщения
+      if (ctx.message && ctx.message.text) {
+        console.log(`📨 [${now}] ${ctx.from.first_name} (@${ctx.from.username || 'no_username'}): ${ctx.message.text}`);
+      }
+
+      // Логируем нажатия inline кнопок
+      if (ctx.callbackQuery) {
+        console.log(`🔘 [${now}] ${ctx.from.first_name} нажал: ${ctx.callbackQuery.data}`);
+      }
+
+      await next(); // Передаем управление следующему middleware
+    });
+
+    // 4. Добавление пользователя в контекст
     this.bot.use(async (ctx, next) => {
       if (ctx.from) {
         try {
           const UserService = require('./services/UserService');
-          ctx.user = await UserService.getOrCreateUser(ctx.from);
-          ctx.isAdmin = BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id);
           
-          // Добавляем botInfo в контекст для удобства
+          // Получаем или создаем пользователя в БД
+          ctx.user = await UserService.getOrCreateUser(ctx.from);
+          
+          // Проверяем права администратора
+          ctx.isAdmin = BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id);
+
+          // Добавляем информацию о боте в контекст
           if (!ctx.botInfo) {
             ctx.botInfo = await this.bot.telegram.getMe();
           }
@@ -60,11 +106,16 @@ class Application {
       await next();
     });
 
-    // СНАЧАЛА команды, ПОТОМ текстовые обработчики
+    // ========== РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ ==========
+    // Важен порядок: команды -> текстовые обработчики
+    
+    // 1. Команды (высший приоритет) - /start, /admin, /help
     this.setupCommands();
+    
+    // 2. Текстовые обработчики (низший приоритет) - кнопки меню, сообщения
     this.setupHandlers();
 
-    // Обработка ошибок
+    // Обработка непойманных ошибок
     this.bot.catch((err, ctx) => {
       console.error(`Error for ${ctx.updateType}:`, err);
       try {
@@ -73,35 +124,46 @@ class Application {
         console.error('Even error reply failed:', e);
       }
     });
-  
   }
 
+  /**
+   * Регистрация команд бота - обрабатываются ПЕРВЫМИ
+   * Команды имеют высший приоритет перед текстовыми обработчиками
+   */
   setupCommands() {
-    // Команда /admin - должна быть ПЕРВОЙ
+    console.log('🔧 Регистрация команд...');
+
+    // Команда /admin - вход в админ-панель
     this.bot.command('admin', async (ctx) => {
-      console.log('Admin command received from:', ctx.from.id);
-      
+      console.log('👑 Команда /admin от:', ctx.from.id);
+
+      // Проверка прав администратора
       if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
-        console.log('Access denied for user:', ctx.from.id);
+        console.log('❌ Доступ запрещен для:', ctx.from.id);
         return ctx.reply('❌ Доступ запрещен. У вас нет прав администратора.');
       }
 
-      console.log('Admin access granted for:', ctx.from.username || ctx.from.first_name);
-      
+      console.log('✅ Доступ разрешен для:', ctx.from.username || ctx.from.first_name);
+
+      // Загружаем клавиатуру админ-панели
       const { adminMainKeyboard } = require('./bot/keyboards/keyboards');
-      
+
+      // Отправляем сообщение с клавиатурой админ-панели
       await ctx.reply('🛠 Панель администратора', {
         reply_markup: adminMainKeyboard
       });
     });
 
-    // Команда /start
+    // Команда /start - приветствие и регистрация пользователя
     this.bot.start(async (ctx) => {
+      console.log('🚀 Команда /start от:', ctx.from.first_name);
+
       const UserService = require('./services/UserService');
       const { userMainKeyboard } = require('./bot/keyboards/keyboards');
-      
+
+      // Создаем или получаем пользователя
       const user = await UserService.getOrCreateUser(ctx.from);
-      
+
       const welcomeText = `🤖 Добро пожаловать в Content Manager Bot!
 
 ✨ Возможности:
@@ -113,14 +175,17 @@ class Application {
 🎯 Ваш пробный период активен до: ${new Date(user.subscription.trialEndDate).toLocaleDateString('ru-RU')}
 
 Используйте меню для управления ботом!`;
-      
+
+      // Отправляем приветственное сообщение с основной клавиатурой
       await ctx.reply(welcomeText, {
         reply_markup: userMainKeyboard
       });
     });
 
-    // Команда /help
+    // Команда /help - справка по боту
     this.bot.help((ctx) => {
+      console.log('❓ Команда /help от:', ctx.from.first_name);
+
       ctx.reply(`📖 Справка по боту:
 
 🔹 *Управление каналами* - добавьте бота как администратора в ваш канал
@@ -130,48 +195,77 @@ class Application {
 
 Для начала работы добавьте бота в ваш канал как администратора!`, { parse_mode: 'Markdown' });
     });
+
+    console.log('✅ Команды зарегистрированы');
   }
 
+  /**
+   * Регистрация текстовых обработчиков - обрабатываются ПОСЛЕ команд
+   * Включает обработчики кнопок меню, сообщений, callback'ов
+   */
   setupHandlers() {
-    // Загружаем все обработчики ПОСЛЕ команд
-    const setupUserHandlers = require('./bot/handlers/userHandlers');
-    const setupAdminHandlers = require('./bot/handlers/adminHandlers');
-    const setupChannelHandlers = require('./bot/handlers/channelHandlers');
-    const setupCallbackHandlers = require('./bot/handlers/callbackHandlers');
+    console.log('🔧 Регистрация обработчиков...');
 
-    setupUserHandlers(this.bot);
+    // Загружаем все обработчики ПОСЛЕ команд
+    const setupAdminHandlers = require('./bot/handlers/adminHandlers');     // Админ-панель
+    const setupCallbackHandlers = require('./bot/handlers/callbackHandlers'); // Inline кнопки
+    const setupUserHandlers = require('./bot/handlers/userHandlers');        // Пользовательское меню
+
+    const setupChannelHandlers = require('./bot/handlers/channelHandlers'); // Управление каналами
+
+    // Регистрируем обработчики в правильном порядке
+    
+    console.log('🔄 Подключение adminHandlers...');
     setupAdminHandlers(this.bot);
-    setupChannelHandlers(this.bot);
+    console.log('🔄 Подключение userHandlers...');
+    setupUserHandlers(this.bot);
+    console.log('🔄 Подключение callbackHandlers...');
     setupCallbackHandlers(this.bot);
+
+
+    console.log('🔄 Подключение channelHandlers...');
+    setupChannelHandlers(this.bot);
+
+
+    console.log('✅ Все обработчики подключены');
   }
 
+  /**
+   * Настройка фоновых задач (cron jobs)
+   * Выполняются по расписанию независимо от пользовательских действий
+   */
   setupCronJobs() {
     // Ежедневный сброс лимитов в 00:00
     cron.schedule('0 0 * * *', async () => {
       console.log('🔄 Resetting daily limits...');
       const User = require('./models/User');
-      await User.resetDailyLimits();
-      
+      await User.resetDailyLimits(); // Сброс дневных счетчиков постов
+
       const AIService = require('./services/AIService');
-      AIService.resetDailyStats();
+      AIService.resetDailyStats(); // Сброс дневной статистики AI
     });
 
     console.log('✅ Cron jobs setup completed');
   }
 
+  /**
+   * Запуск бота - конечная точка инициализации
+   */
   start() {
+    // Запускаем бота
     this.bot.launch();
     console.log('🤖 Бот запущен!');
     console.log('👑 Админы:', BOT_CONFIG.ADMIN_IDS);
 
-    // Graceful shutdown
-    process.once('SIGINT', () => this.bot.stop('SIGINT'));
-    process.once('SIGTERM', () => this.bot.stop('SIGTERM'));
+    // Graceful shutdown - корректное завершение работы
+    process.once('SIGINT', () => this.bot.stop('SIGINT'));  // Ctrl+C
+    process.once('SIGTERM', () => this.bot.stop('SIGTERM')); // Сигнал завершения
   }
 }
 
-// Запуск приложения
+// Создаем и запускаем приложение
 const app = new Application();
 app.start();
 
+// Экспортируем для возможного использования в других модулях
 module.exports = app;

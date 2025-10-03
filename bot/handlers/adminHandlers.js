@@ -160,21 +160,63 @@ function setupAdminHandlers(bot) {
     if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) return;
 
     try {
+      // Статистика по пользователям на каждом тарифе
+      const userStats = await User.aggregate([
+        {
+          $group: {
+            _id: '$subscription.plan',
+            count: { $sum: 1 },
+            active: {
+              $sum: {
+                $cond: [
+                  { $and: [
+                    { $ne: ['$subscription.plan', 'FREE'] },
+                    { $gt: ['$subscription.endDate', new Date()] }
+                  ]},
+                  1,
+                  0
+                ]
+              }
+            }
+          }
+        }
+      ]);
+
+      const planStatsMap = {};
+      userStats.forEach(stat => {
+        planStatsMap[stat._id] = stat;
+      });
+
       let message = '💎 Текущие тарифные планы:\n\n';
       
       Object.entries(SUBSCRIPTION_PLANS).forEach(([key, plan]) => {
-        message += `🔸 ${plan.name}\n`;
-        message += `   Каналов: ${plan.channels}\n`;
-        message += `   Постов/день: ${plan.postsPerDay}\n`;
-        message += `   AI: ${plan.aiAccess ? '✅' : '❌'}\n`;
-        message += `   Цена: ${plan.price > 0 ? `${plan.price} звезд` : 'Бесплатно'}\n\n`;
+        const stats = planStatsMap[key] || { count: 0, active: 0 };
+        
+        message += `🔸 *${plan.name}*\n`;
+        message += `   📺 Каналов: ${plan.channels}\n`;
+        message += `   📝 Постов/день: ${plan.postsPerDay}\n`;
+        message += `   🤖 AI: ${plan.aiAccess ? '✅' : '❌'}\n`;
+        message += `   💰 Цена: ${plan.price > 0 ? `${plan.price} звезд` : 'Бесплатно'}\n`;
+        message += `   👥 Пользователей: ${stats.count} (активных: ${stats.active})\n\n`;
       });
 
+      message += '💡 Управление тарифами:';
+
       await ctx.reply(message, {
+        parse_mode: 'Markdown',
         reply_markup: {
           inline_keyboard: [
-            [{ text: '✏️ Изменить тарифы', callback_data: 'admin_edit_plans' }],
-            [{ text: '🔙 В админ-панель', callback_data: 'admin_back_to_panel' }]
+            [
+              { text: '✏️ Изменить тариф', callback_data: 'admin_edit_plan' },
+              { text: '🆕 Создать тариф', callback_data: 'admin_create_plan' }
+            ],
+            [
+              { text: '📊 Статистика', callback_data: 'admin_plan_stats' },
+              { text: '🔄 Сбросить', callback_data: 'admin_reset_plans' }
+            ],
+            [
+              { text: '🔙 В админ-панель', callback_data: 'admin_back_to_panel' }
+            ]
           ]
         }
       });
