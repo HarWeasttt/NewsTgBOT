@@ -1,4 +1,6 @@
 require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
 
 const BOT_CONFIG = {
   TOKEN: process.env.BOT_TOKEN || '',
@@ -39,6 +41,26 @@ const SUBSCRIPTION_PLANS = {
   }
 };
 
+// Загрузка кастомных тарифов
+function loadCustomPlans() {
+  try {
+    const customPlansPath = path.join(__dirname, 'custom_plans.json');
+    if (fs.existsSync(customPlansPath)) {
+      const customPlansData = fs.readFileSync(customPlansPath, 'utf8');
+      const customPlans = JSON.parse(customPlansData);
+      
+      // Добавляем кастомные тарифы в основной объект
+      Object.assign(SUBSCRIPTION_PLANS, customPlans);
+      console.log(`✅ Загружено ${Object.keys(customPlans).length} кастомных тарифов`);
+    }
+  } catch (error) {
+    console.error('❌ Ошибка загрузки кастомных тарифов:', error);
+  }
+}
+
+// Загружаем кастомные тарифы при старте
+loadCustomPlans();
+
 const AI_TONES = {
   professional: 'Профессиональный',
   humorous: 'Юмористический',
@@ -50,5 +72,6 @@ const AI_TONES = {
 module.exports = {
   BOT_CONFIG,
   SUBSCRIPTION_PLANS,
-  AI_TONES
+  AI_TONES,
+  loadCustomPlans // Экспортируем для перезагрузки
 };

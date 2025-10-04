@@ -52,10 +52,11 @@ class Application {
     const rssSetupScene = require('./bot/scenes/rssSetupScene'); // Настройка RSS
     const aiPostScene = require('./bot/scenes/aiPostScene');     // Генерация AI постов
     const editPlanScene = require('./bot/scenes/editPlanScene');
-  const changeAIKeyScene = require('./bot/scenes/changeAIKeyScene');
+    const changeAIKeyScene = require('./bot/scenes/changeAIKeyScene');
+    const createPlanScene = require('./bot/scenes/createPlanScene');
 
     // Создаем stage для управления сценами
-    const stage = new Scenes.Stage([rssSetupScene, aiPostScene, editPlanScene, changeAIKeyScene]);
+    const stage = new Scenes.Stage([rssSetupScene, aiPostScene, editPlanScene, changeAIKeyScene, createPlanScene]);
 
     // ========== MIDDLEWARE СТЕК ==========
     // Middleware выполняются ПОСЛЕДОВАТЕЛЬНО для каждого входящего сообщения
@@ -206,29 +207,32 @@ class Application {
   setupHandlers() {
     console.log('🔧 Регистрация обработчиков...');
 
-    // Загружаем все обработчики ПОСЛЕ команд
-    const setupCallbackHandlers = require('./bot/handlers/callbackHandlers'); // Inline кнопки
-    const setupAdminHandlers = require('./bot/handlers/adminHandlers');     // Админ-панель
-    const setupUserHandlers = require('./bot/handlers/userHandlers');        // Пользовательское меню
-
-    const setupChannelHandlers = require('./bot/handlers/channelHandlers'); // Управление каналами
-
-    // Регистрируем обработчики в правильном порядке
-    
-    console.log('🔄 Подключение adminHandlers...');
-    setupAdminHandlers(this.bot);
-    console.log('🔄 Подключение callbackHandlers...');
-    setupCallbackHandlers(this.bot);
-    console.log('🔄 Подключение userHandlers...');
-    setupUserHandlers(this.bot);
+    const setupCallbackHandlers = require('./bot/handlers/callbackHandlers');
+    const setupAdminHandlers = require('./bot/handlers/adminHandlers');
+    const setupUserHandlers = require('./bot/handlers/userHandlers');
+    const setupChannelHandlers = require('./bot/handlers/channelHandlers');
 
 
-    console.log('🔄 Подключение channelHandlers...');
-    setupChannelHandlers(this.bot);
+    const setupAllHandlers = async () => {
+        try {
+            console.log('🔄 Подключение adminHandlers...');
+            await setupAdminHandlers(this.bot);
+            console.log('🔄 Подключение userHandlers...');
+            await setupUserHandlers(this.bot);
 
+            console.log('🔄 Подключение callbackHandlers...');
+            await setupCallbackHandlers(this.bot);
 
-    console.log('✅ Все обработчики подключены');
-  }
+            console.log('🔄 Подключение channelHandlers...');
+            await setupChannelHandlers(this.bot);
+            console.log('✅ Все обработчики подключены');
+        } catch (error) {
+            console.error('❌ Ошибка при подключении обработчиков:', error);
+        }
+    };
+
+    setupAllHandlers();
+}
 
   /**
    * Настройка фоновых задач (cron jobs)

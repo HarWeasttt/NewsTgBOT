@@ -6,8 +6,8 @@ const UserService = require('../../services/UserService');
 const AIService = require('../../services/AIService');
 const ConfigService = require('../../services/ConfigService');
 const BotManager = require('../../services/BotManager');
-const { userMainKeyboard, adminMainKeyboard } = require('../keyboards/keyboards');
-const { BOT_CONFIG, SUBSCRIPTION_PLANS } = require('../../config');
+const { userMainKeyboard } = require('../keyboards/keyboards');
+const { BOT_CONFIG, SUBSCRIPTION_PLANS, loadCustomPlans } = require('../../config');
 const { createObjectCsvWriter } = require('csv-writer');
 const fs = require('fs');
 const path = require('path');
@@ -45,7 +45,7 @@ function setupCallbackHandlers(bot) {
       }
 
       const csvPath = path.join(__dirname, '../../temp/transactions.csv');
-      
+
       const csvWriter = createObjectCsvWriter({
         path: csvPath,
         header: [
@@ -68,18 +68,18 @@ function setupCallbackHandlers(bot) {
       }));
 
       await csvWriter.writeRecords(records);
-      
+
       await ctx.replyWithDocument({
         source: csvPath,
         filename: `transactions_${new Date().toISOString().split('T')[0]}.csv`
       });
-      
+
       setTimeout(() => {
         if (fs.existsSync(csvPath)) {
           fs.unlinkSync(csvPath);
         }
       }, 30000);
-      
+
     } catch (error) {
       console.error('Export error:', error);
       await ctx.answerCbQuery('❌ Ошибка при экспорте');
@@ -118,16 +118,16 @@ function setupCallbackHandlers(bot) {
 
     try {
       const users = await User.find().sort({ createdAt: -1 }).limit(50);
-      
+
       let message = '👥 Последние 50 пользователей:\n\n';
-      
+
       users.forEach((user, index) => {
         message += `${index + 1}. ${user.firstName}${user.username ? ` (@${user.username})` : ''}\n`;
         message += `   ID: ${user.telegramId}\n`;
         message += `   Тариф: ${user.subscription.plan}\n`;
         message += `   Регистрация: ${user.createdAt.toLocaleDateString('ru-RU')}\n\n`;
       });
-      
+
       await ctx.editMessageText(message, {
         reply_markup: {
           inline_keyboard: [
@@ -148,9 +148,7 @@ function setupCallbackHandlers(bot) {
       return;
     }
 
-    await ctx.editMessageText('🛠 Панель администратора', {
-      reply_markup: adminMainKeyboard
-    });
+    await ctx.editMessageText('🛠 Панель администратора');
   });
 
   // История транзакций
@@ -167,7 +165,7 @@ function setupCallbackHandlers(bot) {
         .limit(10);
 
       let message = '📈 Последние 10 транзакций:\n\n';
-      
+
       if (transactions.length === 0) {
         message += '❌ Нет завершенных транзакций';
       } else {
@@ -204,20 +202,172 @@ function setupCallbackHandlers(bot) {
     await ctx.answerCbQuery();
   });
 
-  // Создание нового тарифа
   bot.action('admin_create_plan', async (ctx) => {
     if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
       await ctx.answerCbQuery('❌ Доступ запрещен');
       return;
     }
 
-    await ctx.editMessageText('🆕 Создание нового тарифа:\n\nЭта функция будет доступна в следующем обновлении.', {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '🔙 Назад к тарифам', callback_data: 'admin_back_to_plans' }]
-        ]
+    try {
+      await ctx.scene.enter('create-plan-scene');
+      await ctx.answerCbQuery();
+    } catch (error) {
+      console.error('Create plan scene error:', error);
+      await ctx.answerCbQuery('❌ Ошибка при запуске создания тарифа');
+    }
+  });
+
+  // Статистика тарифов - ОБНОВЛЕННАЯ ВЕРСИЯ
+  bot.action('admin_plan_stats', async (ctx) => {
+    if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
+      await ctx.answerCbQuery('❌ Доступ запрещен');
+      return;
+    }
+
+    try {
+      const stats = await User.aggregate([
+        {
+          $group: {
+            _id: '$subscription.plan',
+            total: { $sum: 1 },
+            active: {
+              $sum: {
+                $cond: [
+                  {
+                    $and: [
+                      { $ne: ['$subscription.plan', 'FREE'] },
+                      { $gt: ['$subscription.endDate', new Date()] }
+                    ]
+                  },
+                  1,
+                  0
+                ]
+              }
+            },
+            trial: {
+              $sum: {
+                $cond: [{ $eq: ['$subscription.isTrial', true] }, 1, 0]
+              }
+            }
+          }
+        }
+      ]);
+
+      let message = '📊 Статистика по тарифам:\n\n';
+
+      // Сортируем тарифы: сначала стандартные, потом кастомные
+      const sortedStats = stats.sort((a, b) => {
+        const aIsCustom = a._id.startsWith('CUSTOM_');
+        const bIsCustom = b._id.startsWith('CUSTOM_');
+        if (aIsCustom && !bIsCustom) return 1;
+        if (!aIsCustom && bIsCustom) return -1;
+        return a._id.localeCompare(b._id);
+      });
+
+      sortedStats.forEach(stat => {
+        const plan = SUBSCRIPTION_PLANS[stat._id];
+        if (plan) {
+          const isCustom = stat._id.startsWith('CUSTOM_');
+          message += `🔸 ${plan.name} ${isCustom ? '🎨' : ''}\n`;
+          message += `   Всего: ${stat.total} пользователей\n`;
+          message += `   Активных: ${stat.active}\n`;
+          message += `   Пробных: ${stat.trial}\n\n`;
+        }
+      });
+
+      // Общая статистика
+      const totalUsers = await User.countDocuments();
+      const activeSubs = await User.countDocuments({
+        'subscription.plan': { $ne: 'FREE' },
+        'subscription.endDate': { $gt: new Date() }
+      });
+
+      const customPlansCount = Object.keys(SUBSCRIPTION_PLANS).filter(key =>
+        key.startsWith('CUSTOM_')
+      ).length;
+
+      message += `📈 Общая статистика:\n`;
+      message += `   Всего пользователей: ${totalUsers}\n`;
+      message += `   Активных подписок: ${activeSubs}\n`;
+      message += `   Всего тарифов: ${Object.keys(SUBSCRIPTION_PLANS).length} (${customPlansCount} кастомных)\n`;
+      message += `   Конверсия: ${totalUsers > 0 ? ((activeSubs / totalUsers) * 100).toFixed(1) : 0}%`;
+
+      await ctx.editMessageText(message, {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: '🆕 Создать тариф', callback_data: 'admin_create_plan' },
+              { text: '🔄 Обновить', callback_data: 'admin_plan_stats' }
+            ],
+            [
+              { text: '🔙 Назад к тарифам', callback_data: 'admin_back_to_plans' }
+            ]
+          ]
+        }
+      });
+
+    } catch (error) {
+      console.error('Plan stats error:', error);
+      await ctx.editMessageText('❌ Ошибка при получении статистики');
+    }
+  });
+
+  // Сброс тарифов - ОБНОВЛЕННАЯ ВЕРСИЯ
+  bot.action('admin_reset_plans', async (ctx) => {
+    if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
+      await ctx.answerCbQuery('❌ Доступ запрещен');
+      return;
+    }
+
+    try {
+      await ctx.editMessageText('🔄 Сброс кастомных тарифов...\n\nЭта операция удалит все созданные тарифы и вернет стандартные настройки.', {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: '✅ Подтвердить сброс', callback_data: 'confirm_reset_plans' },
+              { text: '❌ Отмена', callback_data: 'admin_back_to_plans' }
+            ]
+          ]
+        }
+      });
+    } catch (error) {
+      console.error('Reset plans error:', error);
+      await ctx.answerCbQuery('❌ Ошибка при сбросе тарифов');
+    }
+  });
+
+  // Подтверждение сброса тарифов
+  bot.action('confirm_reset_plans', async (ctx) => {
+    if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
+      await ctx.answerCbQuery('❌ Доступ запрещен');
+      return;
+    }
+
+    try {
+      const fs = require('fs');
+      const path = require('path');
+
+      const customPlansPath = path.join(__dirname, '../../config/custom_plans.json');
+
+      if (fs.existsSync(customPlansPath)) {
+        fs.unlinkSync(customPlansPath);
       }
-    });
+
+      // Перезагружаем конфигурацию
+      loadCustomPlans();
+
+      await ctx.editMessageText('✅ Кастомные тарифы успешно сброшены!\n\nВсе созданные тарифы удалены, восстановлены стандартные настройки.', {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🔙 К тарифам', callback_data: 'admin_back_to_plans' }]
+          ]
+        }
+      });
+
+    } catch (error) {
+      console.error('Confirm reset plans error:', error);
+      await ctx.editMessageText('❌ Ошибка при сбросе тарифов');
+    }
   });
 
   // Статистика тарифов
@@ -236,10 +386,12 @@ function setupCallbackHandlers(bot) {
             active: {
               $sum: {
                 $cond: [
-                  { $and: [
-                    { $ne: ['$_id', 'FREE'] },
-                    { $gt: ['$subscription.endDate', new Date()] }
-                  ]},
+                  {
+                    $and: [
+                      { $ne: ['$_id', 'FREE'] },
+                      { $gt: ['$subscription.endDate', new Date()] }
+                    ]
+                  },
                   1,
                   0
                 ]
@@ -255,7 +407,7 @@ function setupCallbackHandlers(bot) {
       ]);
 
       let message = '📊 Статистика по тарифам:\n\n';
-      
+
       stats.forEach(stat => {
         const plan = SUBSCRIPTION_PLANS[stat._id];
         if (plan) {
@@ -293,22 +445,6 @@ function setupCallbackHandlers(bot) {
     }
   });
 
-  // Сброс тарифов к значениям по умолчанию
-  bot.action('admin_reset_plans', async (ctx) => {
-    if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
-      await ctx.answerCbQuery('❌ Доступ запрещен');
-      return;
-    }
-
-    await ctx.editMessageText('🔄 Сброс тарифов к значениям по умолчанию:\n\nЭта функция будет доступна в следующем обновлении.', {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '🔙 Назад к тарифам', callback_data: 'admin_back_to_plans' }]
-        ]
-      }
-    });
-  });
-
   // Возврат к списку тарифов
   bot.action('admin_back_to_plans', async (ctx) => {
     if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
@@ -318,7 +454,7 @@ function setupCallbackHandlers(bot) {
 
     // Повторно показываем список тарифов
     let message = '💎 Текущие тарифные планы:\n\n';
-    
+
     Object.entries(SUBSCRIPTION_PLANS).forEach(([key, plan]) => {
       message += `🔸 *${plan.name}*\n`;
       message += `   Каналов: ${plan.channels}\n`;
@@ -355,7 +491,7 @@ function setupCallbackHandlers(bot) {
     }
 
     const aiStats = AIService.getUsageStats();
-    
+
     const message = `📊 Детальная статистика AI:
 
 • Всего запросов: ${aiStats.totalRequests}
@@ -377,100 +513,111 @@ function setupCallbackHandlers(bot) {
   });
 
   // Изменение API ключа AI - ПОЛНАЯ РЕАЛИЗАЦИЯ
-bot.action('admin_change_ai_key', async (ctx) => {
-  if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
-    await ctx.answerCbQuery('❌ Доступ запрещен');
-    return;
-  }
-
-  try {
-    const currentKey = ConfigService.getCurrentAIKey();
-    const keyHistory = ConfigService.getKeyChangeHistory();
-
-    let message = '🔧 Управление API ключом OpenAI\n\n';
-    
-    if (currentKey) {
-      message += `📋 Текущий ключ: \`${currentKey}\`\n`;
-      message += `✅ Ключ установлен и активен\n\n`;
-    } else {
-      message += `⚠️ API ключ не установлен\n\n`;
+  bot.action('admin_change_ai_key', async (ctx) => {
+    if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
+      await ctx.answerCbQuery('❌ Доступ запрещен');
+      return;
     }
 
-    message += `📊 Статистика использования AI:\n`;
-    const aiStats = require('../../services/AIService').getUsageStats();
-    message += `• Всего запросов: ${aiStats.totalRequests}\n`;
-    message += `• Запросов сегодня: ${aiStats.todayRequests}\n\n`;
+    try {
+      const currentKey = ConfigService.getCurrentAIKey();
+      const keyHistory = ConfigService.getKeyChangeHistory();
 
-    if (keyHistory.length > 0) {
-      message += `🕐 История изменений (последние ${keyHistory.length}):\n`;
-      keyHistory.slice(0, 3).forEach((change, index) => {
-        const date = new Date(change.timestamp).toLocaleString('ru-RU');
-        message += `${index + 1}. ${date} - ${change.newKey}\n`;
-      });
-      message += `\n`;
-    }
+      let message = '🔧 Управление API ключом OpenAI\n\n';
 
-    message += `Выберите действие:`;
-
-    await ctx.editMessageText(message, {
-      parse_mode: 'Markdown',
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '✏️ Изменить API ключ', callback_data: 'change_ai_key_wizard' }],
-          [{ text: '📊 Подробная статистика', callback_data: 'admin_ai_detailed_stats' }],
-          [{ text: '🔄 Проверить ключ', callback_data: 'test_ai_key' }],
-          [{ text: '🔙 В админ-панель', callback_data: 'admin_back_to_panel' }]
-        ]
+      if (currentKey) {
+        message += `📋 Текущий ключ: \`${currentKey}\`\n`;
+        message += `✅ Ключ установлен и активен\n\n`;
+      } else {
+        message += `⚠️ API ключ не установлен\n\n`;
       }
-    });
 
-  } catch (error) {
-    console.error('AI key management error:', error);
-    await ctx.answerCbQuery('❌ Ошибка при загрузке информации о ключе');
-  }
-});
+      message += `📊 Статистика использования AI:\n`;
+      const aiStats = require('../../services/AIService').getUsageStats();
+      message += `• Всего запросов: ${aiStats.totalRequests}\n`;
+      message += `• Запросов сегодня: ${aiStats.todayRequests}\n\n`;
 
-// Запуск сцены изменения ключа
-bot.action('change_ai_key_wizard', async (ctx) => {
-  if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
-    await ctx.answerCbQuery('❌ Доступ запрещен');
-    return;
-  }
+      if (keyHistory.length > 0) {
+        message += `🕐 История изменений (последние ${keyHistory.length}):\n`;
+        keyHistory.slice(0, 3).forEach((change, index) => {
+          const date = new Date(change.timestamp).toLocaleString('ru-RU');
+          message += `${index + 1}. ${date} - ${change.newKey}\n`;
+        });
+        message += `\n`;
+      }
 
-  try {
-    await ctx.scene.enter('change-ai-key-scene');
-    await ctx.answerCbQuery();
-  } catch (error) {
-    console.error('Change AI key scene error:', error);
-    await ctx.answerCbQuery('❌ Ошибка при запуске мастера изменения ключа');
-  }
-});
+      message += `Выберите действие:`;
 
-// Тестирование API ключа
-bot.action('test_ai_key', async (ctx) => {
-  if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
-    await ctx.answerCbQuery('❌ Доступ запрещен');
-    return;
-  }
-
-  try {
-    await ctx.editMessageText('🔄 Проверка API ключа...');
-
-    const AIService = require('../../services/AIService');
-    
-    // Пытаемся сделать тестовый запрос
-    const testResult = await AIService.generatePost('тест', 'professional');
-
-    if (testResult && !testResult.includes('ошибка') && !testResult.includes('error')) {
-      await ctx.editMessageText('✅ API ключ работает корректно!\n\nТестовый запрос выполнен успешно. AI сервис готов к работе.', {
+      await ctx.editMessageText(message, {
+        parse_mode: 'Markdown',
         reply_markup: {
           inline_keyboard: [
-            [{ text: '🔙 Назад', callback_data: 'admin_change_ai_key' }]
+            [{ text: '✏️ Изменить API ключ', callback_data: 'change_ai_key_wizard' }],
+            [{ text: '📊 Подробная статистика', callback_data: 'admin_ai_detailed_stats' }],
+            [{ text: '🔄 Проверить ключ', callback_data: 'test_ai_key' }],
+            [{ text: '🔙 В админ-панель', callback_data: 'admin_back_to_panel' }]
           ]
         }
       });
-    } else {
-      await ctx.editMessageText('❌ Проблема с API ключом!\n\nТестовый запрос завершился с ошибкой. Проверьте ключ и баланс аккаунта OpenAI.', {
+
+    } catch (error) {
+      console.error('AI key management error:', error);
+      await ctx.answerCbQuery('❌ Ошибка при загрузке информации о ключе');
+    }
+  });
+
+  // Запуск сцены изменения ключа
+  bot.action('change_ai_key_wizard', async (ctx) => {
+    if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
+      await ctx.answerCbQuery('❌ Доступ запрещен');
+      return;
+    }
+
+    try {
+      await ctx.scene.enter('change-ai-key-scene');
+      await ctx.answerCbQuery();
+    } catch (error) {
+      console.error('Change AI key scene error:', error);
+      await ctx.answerCbQuery('❌ Ошибка при запуске мастера изменения ключа');
+    }
+  });
+
+  // Тестирование API ключа
+  bot.action('test_ai_key', async (ctx) => {
+    if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
+      await ctx.answerCbQuery('❌ Доступ запрещен');
+      return;
+    }
+
+    try {
+      await ctx.editMessageText('🔄 Проверка API ключа...');
+
+      const AIService = require('../../services/AIService');
+
+      // Пытаемся сделать тестовый запрос
+      const testResult = await AIService.generatePost('тест', 'professional');
+
+      if (testResult && !testResult.includes('ошибка') && !testResult.includes('error')) {
+        await ctx.editMessageText('✅ API ключ работает корректно!\n\nТестовый запрос выполнен успешно. AI сервис готов к работе.', {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '🔙 Назад', callback_data: 'admin_change_ai_key' }]
+            ]
+          }
+        });
+      } else {
+        await ctx.editMessageText('❌ Проблема с API ключом!\n\nТестовый запрос завершился с ошибкой. Проверьте ключ и баланс аккаунта OpenAI.', {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '✏️ Изменить ключ', callback_data: 'change_ai_key_wizard' }],
+              [{ text: '🔙 Назад', callback_data: 'admin_change_ai_key' }]
+            ]
+          }
+        });
+      }
+
+    } catch (error) {
+      await ctx.editMessageText(`❌ Ошибка при проверке API ключа:\n\n${error.message}\n\nПроверьте ключ и повторите попытку.`, {
         reply_markup: {
           inline_keyboard: [
             [{ text: '✏️ Изменить ключ', callback_data: 'change_ai_key_wizard' }],
@@ -479,127 +626,79 @@ bot.action('test_ai_key', async (ctx) => {
         }
       });
     }
+  });
 
-  } catch (error) {
-    await ctx.editMessageText(`❌ Ошибка при проверке API ключа:\n\n${error.message}\n\nПроверьте ключ и повторите попытку.`, {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '✏️ Изменить ключ', callback_data: 'change_ai_key_wizard' }],
-          [{ text: '🔙 Назад', callback_data: 'admin_change_ai_key' }]
-        ]
-      }
-    });
-  }
-});
-
-// Перезапуск бота - ПОЛНАЯ РЕАЛИЗАЦИЯ
-bot.action('admin_restart_bot', async (ctx) => {
-  if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
-    await ctx.answerCbQuery('❌ Доступ запрещен');
-    return;
-  }
-
-  try {
-    const processInfo = BotManager.getProcessInfo();
-    
-    let message = '🔄 Управление перезапуском бота\n\n';
-    message += `📊 Информация о процессе:\n`;
-    message += `• PID: ${processInfo.pid}\n`;
-    message += `• Время работы: ${Math.floor(processInfo.uptime / 60)} минут\n`;
-    message += `• Память: ${(processInfo.memory.rss / 1024 / 1024).toFixed(2)} MB\n`;
-    message += `• Перезапусков: ${processInfo.restartCount}\n`;
-    message += `• PM2: ${processInfo.pm2 ? '✅' : '❌'}\n\n`;
-
-    message += `⚠️ Внимание:\n`;
-    message += `• Мягкий перезапуск перезагружает модули\n`;
-    message += `• Полный перезапуск перезапускает процесс\n`;
-    message += `• Во время перезапуска бот может быть недоступен\n`;
-
-    await ctx.editMessageText(message, {
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: '🔄 Мягкий перезапуск', callback_data: 'soft_restart_bot' },
-            { text: '🔄 Полный перезапуск', callback_data: 'full_restart_bot' }
-          ],
-          [
-            { text: '📊 Статус системы', callback_data: 'admin_system_status' },
-            { text: '🧹 Очистить кеш', callback_data: 'clear_bot_cache' }
-          ],
-          [
-            { text: '🔙 В админ-панель', callback_data: 'admin_back_to_panel' }
-          ]
-        ]
-      }
-    });
-
-  } catch (error) {
-    console.error('Restart bot error:', error);
-    await ctx.answerCbQuery('❌ Ошибка при загрузке информации о перезапуске');
-  }
-});
-
-// Мягкий перезапуск
-bot.action('soft_restart_bot', async (ctx) => {
-  if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
-    await ctx.answerCbQuery('❌ Доступ запрещен');
-    return;
-  }
-
-  try {
-    await ctx.editMessageText('🔄 Выполняется мягкий перезапуск...');
-
-    const result = await BotManager.softRestart();
-    
-    if (result.success) {
-      BotManager.logRestart(ctx.from.id, 'soft_restart');
-      
-      await ctx.editMessageText(`✅ ${result.message}\n\nОсновные модули перезагружены. Бот продолжает работу.`, {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '🔙 В админ-панель', callback_data: 'admin_back_to_panel' }]
-          ]
-        }
-      });
-    } else {
-      await ctx.editMessageText(`❌ Ошибка при мягком перезапуске: ${result.error}`, {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '🔙 Назад', callback_data: 'admin_restart_bot' }]
-          ]
-        }
-      });
+  // Перезапуск бота - ПОЛНАЯ РЕАЛИЗАЦИЯ
+  bot.action('admin_restart_bot', async (ctx) => {
+    if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
+      await ctx.answerCbQuery('❌ Доступ запрещен');
+      return;
     }
 
-  } catch (error) {
-    await ctx.editMessageText(`❌ Ошибка при мягком перезапуске: ${error.message}`, {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '🔙 Назад', callback_data: 'admin_restart_bot' }]
-        ]
-      }
-    });
-  }
-});
+    try {
+      const processInfo = BotManager.getProcessInfo();
 
-// Полный перезапуск
-bot.action('full_restart_bot', async (ctx) => {
-  if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
-    await ctx.answerCbQuery('❌ Доступ запрещен');
-    return;
-  }
+      let message = '🔄 Управление перезапуском бота\n\n';
+      message += `📊 Информация о процессе:\n`;
+      message += `• PID: ${processInfo.pid}\n`;
+      message += `• Время работы: ${Math.floor(processInfo.uptime / 60)} минут\n`;
+      message += `• Память: ${(processInfo.memory.rss / 1024 / 1024).toFixed(2)} MB\n`;
+      message += `• Перезапусков: ${processInfo.restartCount}\n`;
+      message += `• PM2: ${processInfo.pm2 ? '✅' : '❌'}\n\n`;
 
-  try {
-    await ctx.editMessageText('🔄 Подготовка к полному перезапуску...\n\n⚠️ Бот будет временно недоступен!');
+      message += `⚠️ Внимание:\n`;
+      message += `• Мягкий перезапуск перезагружает модули\n`;
+      message += `• Полный перезапуск перезапускает процесс\n`;
+      message += `• Во время перезапуска бот может быть недоступен\n`;
 
-    // Даем пользователю время прочитать сообщение
-    setTimeout(async () => {
-      const result = await BotManager.fullRestart();
-      
+      await ctx.editMessageText(message, {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: '🔄 Мягкий перезапуск', callback_data: 'soft_restart_bot' },
+              { text: '🔄 Полный перезапуск', callback_data: 'full_restart_bot' }
+            ],
+            [
+              { text: '📊 Статус системы', callback_data: 'admin_system_status' },
+              { text: '🧹 Очистить кеш', callback_data: 'clear_bot_cache' }
+            ],
+            [
+              { text: '🔙 В админ-панель', callback_data: 'admin_back_to_panel' }
+            ]
+          ]
+        }
+      });
+
+    } catch (error) {
+      console.error('Restart bot error:', error);
+      await ctx.answerCbQuery('❌ Ошибка при загрузке информации о перезапуске');
+    }
+  });
+
+  // Мягкий перезапуск
+  bot.action('soft_restart_bot', async (ctx) => {
+    if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
+      await ctx.answerCbQuery('❌ Доступ запрещен');
+      return;
+    }
+
+    try {
+      await ctx.editMessageText('🔄 Выполняется мягкий перезапуск...');
+
+      const result = await BotManager.softRestart();
+
       if (result.success) {
-        await ctx.editMessageText(`✅ ${result.message}\n\nБот будет перезапущен. Подождите несколько секунд.`);
+        BotManager.logRestart(ctx.from.id, 'soft_restart');
+
+        await ctx.editMessageText(`✅ ${result.message}\n\nОсновные модули перезагружены. Бот продолжает работу.`, {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '🔙 В админ-панель', callback_data: 'admin_back_to_panel' }]
+            ]
+          }
+        });
       } else {
-        await ctx.editMessageText(`❌ Ошибка при перезапуске: ${result.error}`, {
+        await ctx.editMessageText(`❌ Ошибка при мягком перезапуске: ${result.error}`, {
           reply_markup: {
             inline_keyboard: [
               [{ text: '🔙 Назад', callback_data: 'admin_restart_bot' }]
@@ -607,409 +706,446 @@ bot.action('full_restart_bot', async (ctx) => {
           }
         });
       }
-    }, 2000);
 
-  } catch (error) {
-    await ctx.editMessageText(`❌ Ошибка при перезапуске: ${error.message}`, {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '🔙 Назад', callback_data: 'admin_restart_bot' }]
-        ]
-      }
-    });
-  }
-});
-
-// Статус системы
-bot.action('admin_system_status', async (ctx) => {
-  if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
-    await ctx.answerCbQuery('❌ Доступ запрещен');
-    return;
-  }
-
-  try {
-    const processInfo = BotManager.getProcessInfo();
-    const memoryUsage = process.memoryUsage();
-    
-    let message = '📊 Детальный статус системы\n\n';
-    message += `🖥 Процесс:\n`;
-    message += `• PID: ${processInfo.pid}\n`;
-    message += `• Uptime: ${Math.floor(processInfo.uptime / 3600)}ч ${Math.floor((processInfo.uptime % 3600) / 60)}м\n`;
-    message += `• Node.js: ${processInfo.nodeVersion}\n`;
-    message += `• Платформа: ${processInfo.platform}\n\n`;
-
-    message += `💾 Память:\n`;
-    message += `• RSS: ${(memoryUsage.rss / 1024 / 1024).toFixed(2)} MB\n`;
-    message += `• Heap: ${(memoryUsage.heapUsed / 1024 / 1024).toFixed(2)} MB\n`;
-    message += `• External: ${(memoryUsage.external / 1024 / 1024).toFixed(2)} MB\n\n`;
-
-    message += `🔄 Перезапуски:\n`;
-    message += `• Всего: ${processInfo.restartCount}\n`;
-    message += `• PM2: ${processInfo.pm2 ? '✅' : '❌'}\n`;
-
-    await ctx.editMessageText(message, {
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: '🔄 Мягкий перезапуск', callback_data: 'soft_restart_bot' },
-            { text: '📊 Обновить', callback_data: 'admin_system_status' }
-          ],
-          [
-            { text: '🔙 Назад', callback_data: 'admin_restart_bot' }
+    } catch (error) {
+      await ctx.editMessageText(`❌ Ошибка при мягком перезапуске: ${error.message}`, {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🔙 Назад', callback_data: 'admin_restart_bot' }]
           ]
-        ]
-      }
-    });
+        }
+      });
+    }
+  });
 
-  } catch (error) {
-    console.error('System status error:', error);
-    await ctx.answerCbQuery('❌ Ошибка при получении статуса системы');
-  }
-});
+  // Полный перезапуск
+  bot.action('full_restart_bot', async (ctx) => {
+    if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
+      await ctx.answerCbQuery('❌ Доступ запрещен');
+      return;
+    }
+
+    try {
+      await ctx.editMessageText('🔄 Подготовка к полному перезапуску...\n\n⚠️ Бот будет временно недоступен!');
+
+      // Даем пользователю время прочитать сообщение
+      setTimeout(async () => {
+        const result = await BotManager.fullRestart();
+
+        if (result.success) {
+          await ctx.editMessageText(`✅ ${result.message}\n\nБот будет перезапущен. Подождите несколько секунд.`);
+        } else {
+          await ctx.editMessageText(`❌ Ошибка при перезапуске: ${result.error}`, {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '🔙 Назад', callback_data: 'admin_restart_bot' }]
+              ]
+            }
+          });
+        }
+      }, 2000);
+
+    } catch (error) {
+      await ctx.editMessageText(`❌ Ошибка при перезапуске: ${error.message}`, {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🔙 Назад', callback_data: 'admin_restart_bot' }]
+          ]
+        }
+      });
+    }
+  });
+
+  // Статус системы
+  bot.action('admin_system_status', async (ctx) => {
+    if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
+      await ctx.answerCbQuery('❌ Доступ запрещен');
+      return;
+    }
+
+    try {
+      const processInfo = BotManager.getProcessInfo();
+      const memoryUsage = process.memoryUsage();
+
+      let message = '📊 Детальный статус системы\n\n';
+      message += `🖥 Процесс:\n`;
+      message += `• PID: ${processInfo.pid}\n`;
+      message += `• Uptime: ${Math.floor(processInfo.uptime / 3600)}ч ${Math.floor((processInfo.uptime % 3600) / 60)}м\n`;
+      message += `• Node.js: ${processInfo.nodeVersion}\n`;
+      message += `• Платформа: ${processInfo.platform}\n\n`;
+
+      message += `💾 Память:\n`;
+      message += `• RSS: ${(memoryUsage.rss / 1024 / 1024).toFixed(2)} MB\n`;
+      message += `• Heap: ${(memoryUsage.heapUsed / 1024 / 1024).toFixed(2)} MB\n`;
+      message += `• External: ${(memoryUsage.external / 1024 / 1024).toFixed(2)} MB\n\n`;
+
+      message += `🔄 Перезапуски:\n`;
+      message += `• Всего: ${processInfo.restartCount}\n`;
+      message += `• PM2: ${processInfo.pm2 ? '✅' : '❌'}\n`;
+
+      await ctx.editMessageText(message, {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: '🔄 Мягкий перезапуск', callback_data: 'soft_restart_bot' },
+              { text: '📊 Обновить', callback_data: 'admin_system_status' }
+            ],
+            [
+              { text: '🔙 Назад', callback_data: 'admin_restart_bot' }
+            ]
+          ]
+        }
+      });
+
+    } catch (error) {
+      console.error('System status error:', error);
+      await ctx.answerCbQuery('❌ Ошибка при получении статуса системы');
+    }
+  });
 
   // Логи системы
   bot.action('admin_system_logs', async (ctx) => {
-  if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
-    await ctx.answerCbQuery('❌ Доступ запрещен');
-    return;
-  }
-
-  try {
-    const logFiles = await LogService.getLogFiles();
-    const systemInfo = await LogService.getSystemInfo();
-
-    let message = `📋 Системные логи и информация\n\n`;
-    
-    message += `🖥 Система:\n`;
-    message += `• Память: ${systemInfo.memory.heapUsed} MB / ${systemInfo.memory.heapTotal} MB\n`;
-    message += `• Время работы: ${systemInfo.uptime}\n`;
-    message += `• Node.js: ${systemInfo.nodeVersion}\n`;
-    message += `• PID: ${systemInfo.pid}\n\n`;
-
-    message += `📁 Доступные логи:\n`;
-    
-    if (logFiles.length === 0) {
-      message += `❌ Файлы логов не найдены\n`;
-      message += `Логи будут создаваться автоматически при работе системы.`;
-    } else {
-      logFiles.forEach((file, index) => {
-        message += `${index + 1}. ${file.name}\n`;
-        message += `   📏 Размер: ${file.sizeFormatted}\n`;
-        message += `   ⏰ Изменен: ${file.modified.toLocaleString('ru-RU')}\n\n`;
-      });
+    if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
+      await ctx.answerCbQuery('❌ Доступ запрещен');
+      return;
     }
 
-    const keyboard = [];
-    
-    if (logFiles.length > 0) {
-      // Добавляем кнопки для каждого лог-файла
-      logFiles.slice(0, 5).forEach((file, index) => {
-        keyboard.push([
-          { 
-            text: `📄 ${file.name}`, 
-            callback_data: `view_log_${file.name}` 
-          }
-        ]);
-      });
+    try {
+      const logFiles = await LogService.getLogFiles();
+      const systemInfo = await LogService.getSystemInfo();
 
-      keyboard.push([
-        { text: '🔄 Обновить', callback_data: 'admin_system_logs' },
-        { text: '🧹 Очистить все логи', callback_data: 'clear_all_logs' }
-      ]);
-    } else {
-      keyboard.push([
-        { text: '🔄 Обновить', callback_data: 'admin_system_logs' }
-      ]);
-    }
+      let message = `📋 Системные логи и информация\n\n`;
 
-    keyboard.push([
-      { text: '🔙 В системное меню', callback_data: 'admin_system' }
-    ]);
+      message += `🖥 Система:\n`;
+      message += `• Память: ${systemInfo.memory.heapUsed} MB / ${systemInfo.memory.heapTotal} MB\n`;
+      message += `• Время работы: ${systemInfo.uptime}\n`;
+      message += `• Node.js: ${systemInfo.nodeVersion}\n`;
+      message += `• PID: ${systemInfo.pid}\n\n`;
 
-    await ctx.editMessageText(message, {
-      reply_markup: { inline_keyboard: keyboard },
-      parse_mode: 'Markdown'
-    });
+      message += `📁 Доступные логи:\n`;
 
-  } catch (error) {
-    console.error('System logs error:', error);
-    await ctx.editMessageText('❌ Ошибка при получении информации о логах', {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '🔙 Назад', callback_data: 'admin_system' }]
-        ]
+      if (logFiles.length === 0) {
+        message += `❌ Файлы логов не найдены\n`;
+        message += `Логи будут создаваться автоматически при работе системы.`;
+      } else {
+        logFiles.forEach((file, index) => {
+          message += `${index + 1}. ${file.name}\n`;
+          message += `   📏 Размер: ${file.sizeFormatted}\n`;
+          message += `   ⏰ Изменен: ${file.modified.toLocaleString('ru-RU')}\n\n`;
+        });
       }
-    });
-  }
-});
 
-// Просмотр конкретного лог-файла
-bot.action(/view_log_(.+)/, async (ctx) => {
-  if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
-    await ctx.answerCbQuery('❌ Доступ запрещен');
-    return;
-  }
+      const keyboard = [];
 
-  try {
-    const filename = ctx.match[1];
-    const logContent = await LogService.readLogFile(filename, 30);
+      if (logFiles.length > 0) {
+        // Добавляем кнопки для каждого лог-файла
+        logFiles.slice(0, 5).forEach((file, index) => {
+          keyboard.push([
+            {
+              text: `📄 ${file.name}`,
+              callback_data: `view_log_${file.name}`
+            }
+          ]);
+        });
 
-    let message = `📄 Лог-файл: *${filename}*\n\n`;
-    message += `📊 Всего строк: ${logContent.totalLines}\n`;
-    message += `📝 Показано последних: ${logContent.lines.length} строк\n\n`;
+        keyboard.push([
+          { text: '🔄 Обновить', callback_data: 'admin_system_logs' },
+          { text: '🧹 Очистить все логи', callback_data: 'clear_all_logs' }
+        ]);
+      } else {
+        keyboard.push([
+          { text: '🔄 Обновить', callback_data: 'admin_system_logs' }
+        ]);
+      }
 
-    if (logContent.lines.length === 0) {
-      message += `📭 Файл пуст\n`;
-    } else {
+      keyboard.push([
+        { text: '🔙 В системное меню', callback_data: 'admin_back_to_panel' }
+      ]);
+
+      await ctx.editMessageText(message, {
+        reply_markup: { inline_keyboard: keyboard },
+        parse_mode: 'Markdown'
+      });
+
+    } catch (error) {
+      console.error('System logs error:', error);
+      await ctx.editMessageText('❌ Ошибка при получении информации о логах', {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🔙 Назад', callback_data: 'admin_system' }]
+          ]
+        }
+      });
+    }
+  });
+
+  // Просмотр конкретного лог-файла
+  bot.action(/view_log_(.+)/, async (ctx) => {
+    if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
+      await ctx.answerCbQuery('❌ Доступ запрещен');
+      return;
+    }
+
+    try {
+      const filename = ctx.match[1];
+      const logContent = await LogService.readLogFile(filename, 30);
+
+      let message = `📄 Лог-файл: *${filename}*\n\n`;
+      message += `📊 Всего строк: ${logContent.totalLines}\n`;
+      message += `📝 Показано последних: ${logContent.lines.length} строк\n\n`;
+
+      if (logContent.lines.length === 0) {
+        message += `📭 Файл пуст\n`;
+      } else {
+        // ПРАВИЛЬНОЕ ИСПОЛЬЗОВАНИЕ БЛОКА КОДА
+        message += '```\n';
+        logContent.lines.forEach(line => {
+          message += `${LogService.formatLogLine(line)}\n`;
+        });
+        message += '```\n';
+      }
+
+      if (logContent.hasMore) {
+        message += `\n⚠️ Показаны только последние 30 строк. Используйте экспорт для полной версии.`;
+      }
+
+      const keyboard = [
+        [
+          { text: '📥 Экспорт файла', callback_data: `export_log_${filename}` },
+          { text: '🧹 Очистить', callback_data: `clear_log_${filename}` }
+        ],
+        [
+          { text: '📋 Еще строки', callback_data: `more_log_${filename}_60` },
+          { text: '📜 Все строки', callback_data: `export_log_${filename}` }
+        ],
+        [
+          { text: '🔙 К списку логов', callback_data: 'admin_system_logs' }
+        ]
+      ];
+
+      await ctx.editMessageText(message, {
+        reply_markup: { inline_keyboard: keyboard },
+        parse_mode: 'Markdown'
+      });
+
+    } catch (error) {
+      console.error('View log error:', error);
+      await ctx.answerCbQuery('❌ Ошибка при чтении лог-файла');
+    }
+  });
+
+  // Показать больше строк лога - ИСПРАВЛЕННАЯ ВЕРСИЯ
+  bot.action(/more_log_(.+)_(\d+)/, async (ctx) => {
+    if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
+      await ctx.answerCbQuery('❌ Доступ запрещен');
+      return;
+    }
+
+    try {
+      const filename = ctx.match[1];
+      const linesCount = parseInt(ctx.match[2]);
+      const logContent = await LogService.readLogFile(filename, linesCount);
+
+      let message = `📄 Лог-файл: *${filename}*\n\n`;
+      message += `📊 Всего строк: ${logContent.totalLines}\n`;
+      message += `📝 Показано последних: ${logContent.lines.length} строк\n\n`;
+
       // ПРАВИЛЬНОЕ ИСПОЛЬЗОВАНИЕ БЛОКА КОДА
       message += '```\n';
       logContent.lines.forEach(line => {
         message += `${LogService.formatLogLine(line)}\n`;
       });
       message += '```\n';
-    }
 
-    if (logContent.hasMore) {
-      message += `\n⚠️ Показаны только последние 30 строк. Используйте экспорт для полной версии.`;
-    }
+      if (logContent.hasMore) {
+        message += `\n⚠️ Показаны только последние ${linesCount} строк.`;
+      }
 
-    const keyboard = [
-      [
-        { text: '📥 Экспорт файла', callback_data: `export_log_${filename}` },
-        { text: '🧹 Очистить', callback_data: `clear_log_${filename}` }
-      ],
-      [
-        { text: '📋 Еще строки', callback_data: `more_log_${filename}_60` },
-        { text: '📜 Все строки', callback_data: `export_log_${filename}` }
-      ],
-      [
+      const keyboard = [
+        [
+          { text: '📥 Экспорт файла', callback_data: `export_log_${filename}` },
+          { text: '🧹 Очистить', callback_data: `clear_log_${filename}` }
+        ]
+      ];
+
+      if (linesCount < 100) {
+        keyboard[0].push({
+          text: '📜 Еще строк',
+          callback_data: `more_log_${filename}_${linesCount + 30}`
+        });
+      }
+
+      keyboard.push([
         { text: '🔙 К списку логов', callback_data: 'admin_system_logs' }
-      ]
-    ];
+      ]);
 
-    await ctx.editMessageText(message, {
-      reply_markup: { inline_keyboard: keyboard },
-      parse_mode: 'Markdown'
-    });
-
-  } catch (error) {
-    console.error('View log error:', error);
-    await ctx.answerCbQuery('❌ Ошибка при чтении лог-файла');
-  }
-});
-
-// Показать больше строк лога - ИСПРАВЛЕННАЯ ВЕРСИЯ
-bot.action(/more_log_(.+)_(\d+)/, async (ctx) => {
-  if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
-    await ctx.answerCbQuery('❌ Доступ запрещен');
-    return;
-  }
-
-  try {
-    const filename = ctx.match[1];
-    const linesCount = parseInt(ctx.match[2]);
-    const logContent = await LogService.readLogFile(filename, linesCount);
-
-    let message = `📄 Лог-файл: *${filename}*\n\n`;
-    message += `📊 Всего строк: ${logContent.totalLines}\n`;
-    message += `📝 Показано последних: ${logContent.lines.length} строк\n\n`;
-
-    // ПРАВИЛЬНОЕ ИСПОЛЬЗОВАНИЕ БЛОКА КОДА
-    message += '```\n';
-    logContent.lines.forEach(line => {
-      message += `${LogService.formatLogLine(line)}\n`;
-    });
-    message += '```\n';
-
-    if (logContent.hasMore) {
-      message += `\n⚠️ Показаны только последние ${linesCount} строк.`;
-    }
-
-    const keyboard = [
-      [
-        { text: '📥 Экспорт файла', callback_data: `export_log_${filename}` },
-        { text: '🧹 Очистить', callback_data: `clear_log_${filename}` }
-      ]
-    ];
-
-    if (linesCount < 100) {
-      keyboard[0].push({ 
-        text: '📜 Еще строк', 
-        callback_data: `more_log_${filename}_${linesCount + 30}` 
+      await ctx.editMessageText(message, {
+        reply_markup: { inline_keyboard: keyboard },
+        parse_mode: 'Markdown'
       });
+
+    } catch (error) {
+      console.error('More log error:', error);
+      await ctx.answerCbQuery('❌ Ошибка при чтении лог-файла');
     }
+  });
 
-    keyboard.push([
-      { text: '🔙 К списку логов', callback_data: 'admin_system_logs' }
-    ]);
-
-    await ctx.editMessageText(message, {
-      reply_markup: { inline_keyboard: keyboard },
-      parse_mode: 'Markdown'
-    });
-
-  } catch (error) {
-    console.error('More log error:', error);
-    await ctx.answerCbQuery('❌ Ошибка при чтении лог-файла');
-  }
-});
-
-// Показать больше строк лога
-bot.action(/more_log_(.+)_(\d+)/, async (ctx) => {
-  if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
-    await ctx.answerCbQuery('❌ Доступ запрещен');
-    return;
-  }
-
-  try {
-    const filename = ctx.match[1];
-    const linesCount = parseInt(ctx.match[2]);
-    const logContent = await LogService.readLogFile(filename, linesCount);
-
-    let message = `📄 Лог-файл: *${filename}*\n\n`;
-    message += `📊 Всего строк: ${logContent.totalLines}\n`;
-    message += `📝 Показано последних: ${logContent.lines.length} строк\n\n`;
-
-    message += `\`\`\`\n`;
-    logContent.lines.forEach(line => {
-      message += `${LogService.formatLogLine(line)}\n`;
-    });
-    message += `\`\`\`\n`;
-
-    if (logContent.hasMore) {
-      message += `\n⚠️ Показаны только последние ${linesCount} строк.`;
-    }
-
-    const keyboard = [
-      [
-        { text: '📥 Экспорт файла', callback_data: `export_log_${filename}` },
-        { text: '🧹 Очистить', callback_data: `clear_log_${filename}` }
-      ]
-    ];
-
-    if (linesCount < 100) {
-      keyboard[0].push({ 
-        text: '📜 Еще строк', 
-        callback_data: `more_log_${filename}_${linesCount + 30}` 
-      });
-    }
-
-    keyboard.push([
-      { text: '🔙 К списку логов', callback_data: 'admin_system_logs' }
-    ]);
-
-    await ctx.editMessageText(message, {
-      reply_markup: { inline_keyboard: keyboard },
-      parse_mode: 'Markdown'
-    });
-
-  } catch (error) {
-    console.error('More log error:', error);
-    await ctx.answerCbQuery('❌ Ошибка при чтении лог-файла');
-  }
-});
-
-// Экспорт лог-файла
-bot.action(/export_log_(.+)/, async (ctx) => {
-  if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
-    await ctx.answerCbQuery('❌ Доступ запрещен');
-    return;
-  }
-
-  try {
-    const filename = ctx.match[1];
-    const filePath = path.join(__dirname, '../../logs', filename);
-
-    if (!fs.existsSync(filePath)) {
-      await ctx.answerCbQuery('❌ Файл не найден');
+  // Показать больше строк лога
+  bot.action(/more_log_(.+)_(\d+)/, async (ctx) => {
+    if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
+      await ctx.answerCbQuery('❌ Доступ запрещен');
       return;
     }
 
-    // Проверяем размер файла
-    const stats = fs.statSync(filePath);
-    if (stats.size > 50 * 1024 * 1024) { // 50MB limit
-      await ctx.answerCbQuery('❌ Файл слишком большой для отправки');
+    try {
+      const filename = ctx.match[1];
+      const linesCount = parseInt(ctx.match[2]);
+      const logContent = await LogService.readLogFile(filename, linesCount);
+
+      let message = `📄 Лог-файл: *${filename}*\n\n`;
+      message += `📊 Всего строк: ${logContent.totalLines}\n`;
+      message += `📝 Показано последних: ${logContent.lines.length} строк\n\n`;
+
+      message += `\`\`\`\n`;
+      logContent.lines.forEach(line => {
+        message += `${LogService.formatLogLine(line)}\n`;
+      });
+      message += `\`\`\`\n`;
+
+      if (logContent.hasMore) {
+        message += `\n⚠️ Показаны только последние ${linesCount} строк.`;
+      }
+
+      const keyboard = [
+        [
+          { text: '📥 Экспорт файла', callback_data: `export_log_${filename}` },
+          { text: '🧹 Очистить', callback_data: `clear_log_${filename}` }
+        ]
+      ];
+
+      if (linesCount < 100) {
+        keyboard[0].push({
+          text: '📜 Еще строк',
+          callback_data: `more_log_${filename}_${linesCount + 30}`
+        });
+      }
+
+      keyboard.push([
+        { text: '🔙 К списку логов', callback_data: 'admin_system_logs' }
+      ]);
+
+      await ctx.editMessageText(message, {
+        reply_markup: { inline_keyboard: keyboard },
+        parse_mode: 'Markdown'
+      });
+
+    } catch (error) {
+      console.error('More log error:', error);
+      await ctx.answerCbQuery('❌ Ошибка при чтении лог-файла');
+    }
+  });
+
+  // Экспорт лог-файла
+  bot.action(/export_log_(.+)/, async (ctx) => {
+    if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
+      await ctx.answerCbQuery('❌ Доступ запрещен');
       return;
     }
 
-    await ctx.replyWithDocument({
-      source: filePath,
-      filename: `log_${filename}_${new Date().toISOString().split('T')[0]}.txt`
-    });
+    try {
+      const filename = ctx.match[1];
+      const filePath = path.join(__dirname, '../../logs', filename);
 
-    await ctx.answerCbQuery('✅ Файл отправлен');
+      if (!fs.existsSync(filePath)) {
+        await ctx.answerCbQuery('❌ Файл не найден');
+        return;
+      }
 
-  } catch (error) {
-    console.error('Export log error:', error);
-    await ctx.answerCbQuery('❌ Ошибка при экспорте файла');
-  }
-});
+      // Проверяем размер файла
+      const stats = fs.statSync(filePath);
+      if (stats.size > 50 * 1024 * 1024) { // 50MB limit
+        await ctx.answerCbQuery('❌ Файл слишком большой для отправки');
+        return;
+      }
 
-// Очистка лог-файла
-bot.action(/clear_log_(.+)/, async (ctx) => {
-  if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
-    await ctx.answerCbQuery('❌ Доступ запрещен');
-    return;
-  }
+      await ctx.replyWithDocument({
+        source: filePath,
+        filename: `log_${filename}_${new Date().toISOString().split('T')[0]}.txt`
+      });
 
-  try {
-    const filename = ctx.match[1];
-    const success = await LogService.clearLogFile(filename);
+      await ctx.answerCbQuery('✅ Файл отправлен');
 
-    if (success) {
-      await ctx.answerCbQuery('✅ Лог-файл очищен');
-      // Обновляем сообщение
-      await ctx.editMessageText(`✅ Лог-файл "${filename}" успешно очищен`, {
+    } catch (error) {
+      console.error('Export log error:', error);
+      await ctx.answerCbQuery('❌ Ошибка при экспорте файла');
+    }
+  });
+
+  // Очистка лог-файла
+  bot.action(/clear_log_(.+)/, async (ctx) => {
+    if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
+      await ctx.answerCbQuery('❌ Доступ запрещен');
+      return;
+    }
+
+    try {
+      const filename = ctx.match[1];
+      const success = await LogService.clearLogFile(filename);
+
+      if (success) {
+        await ctx.answerCbQuery('✅ Лог-файл очищен');
+        // Обновляем сообщение
+        await ctx.editMessageText(`✅ Лог-файл "${filename}" успешно очищен`, {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '🔙 К списку логов', callback_data: 'admin_system_logs' }]
+            ]
+          }
+        });
+      } else {
+        await ctx.answerCbQuery('❌ Файл не найден');
+      }
+
+    } catch (error) {
+      console.error('Clear log error:', error);
+      await ctx.answerCbQuery('❌ Ошибка при очистке файла');
+    }
+  });
+
+  // Очистка всех логов
+  bot.action('clear_all_logs', async (ctx) => {
+    if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
+      await ctx.answerCbQuery('❌ Доступ запрещен');
+      return;
+    }
+
+    try {
+      const logFiles = await LogService.getLogFiles();
+      let clearedCount = 0;
+
+      for (const file of logFiles) {
+        try {
+          await LogService.clearLogFile(file.name);
+          clearedCount++;
+        } catch (error) {
+          console.error(`Error clearing ${file.name}:`, error);
+        }
+      }
+
+      await ctx.answerCbQuery(`✅ Очищено ${clearedCount} файлов`);
+      await ctx.editMessageText(`✅ Успешно очищено ${clearedCount} лог-файлов из ${logFiles.length}`, {
         reply_markup: {
           inline_keyboard: [
             [{ text: '🔙 К списку логов', callback_data: 'admin_system_logs' }]
           ]
         }
       });
-    } else {
-      await ctx.answerCbQuery('❌ Файл не найден');
+
+    } catch (error) {
+      console.error('Clear all logs error:', error);
+      await ctx.answerCbQuery('❌ Ошибка при очистке логов');
     }
-
-  } catch (error) {
-    console.error('Clear log error:', error);
-    await ctx.answerCbQuery('❌ Ошибка при очистке файла');
-  }
-});
-
-// Очистка всех логов
-bot.action('clear_all_logs', async (ctx) => {
-  if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
-    await ctx.answerCbQuery('❌ Доступ запрещен');
-    return;
-  }
-
-  try {
-    const logFiles = await LogService.getLogFiles();
-    let clearedCount = 0;
-
-    for (const file of logFiles) {
-      try {
-        await LogService.clearLogFile(file.name);
-        clearedCount++;
-      } catch (error) {
-        console.error(`Error clearing ${file.name}:`, error);
-      }
-    }
-
-    await ctx.answerCbQuery(`✅ Очищено ${clearedCount} файлов`);
-    await ctx.editMessageText(`✅ Успешно очищено ${clearedCount} лог-файлов из ${logFiles.length}`, {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '🔙 К списку логов', callback_data: 'admin_system_logs' }]
-        ]
-      }
-    });
-
-  } catch (error) {
-    console.error('Clear all logs error:', error);
-    await ctx.answerCbQuery('❌ Ошибка при очистке логов');
-  }
-});
+  });
 
   // Управление пользователями (блокировка/разблокировка)
   bot.action(/admin_toggle_block_(.+)/, async (ctx) => {
@@ -1019,7 +1155,7 @@ bot.action('clear_all_logs', async (ctx) => {
     }
 
     const userId = ctx.match[1];
-    
+
     try {
       const user = await User.findById(userId);
       if (!user) {
@@ -1040,114 +1176,114 @@ bot.action('clear_all_logs', async (ctx) => {
   });
 
   // Изменение тарифа пользователя - ИСПРАВЛЕННАЯ ВЕРСИЯ
-bot.action(/admin_change_plan_(.+)/, async (ctx) => {
-  if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
-    await ctx.answerCbQuery('❌ Доступ запрещен');
-    return;
-  }
-
-  try {
-    const userId = ctx.match[1];
-    const user = await User.findById(userId);
-    
-    if (!user) {
-      await ctx.answerCbQuery('❌ Пользователь не найден');
+  bot.action(/admin_change_plan_(.+)/, async (ctx) => {
+    if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
+      await ctx.answerCbQuery('❌ Доступ запрещен');
       return;
     }
 
-    let message = `💎 Изменение тарифа для ${user.firstName}\n\n`;
-    message += `Текущий тариф: ${SUBSCRIPTION_PLANS[user.subscription.plan]?.name || user.subscription.plan}\n\n`;
-    message += `Выберите новый тариф:`;
+    try {
+      const userId = ctx.match[1];
+      const user = await User.findById(userId);
 
-    // СОЗДАЕМ ПРАВИЛЬНЫЙ ФОРМАТ КЛАВИАТУРЫ - массив массивов
-    const keyboard = Object.entries(SUBSCRIPTION_PLANS).map(([key, plan]) => {
-      // Каждый тариф в отдельном массиве (ряду)
-      return [{ 
-        text: `${plan.name} (${plan.price > 0 ? `${plan.price} зв.` : 'Бесплатно'})`, 
-        callback_data: `set_user_plan_${userId}_${key}` 
-      }];
-    });
-
-    // Добавляем кнопку отмены в отдельный ряд
-    keyboard.push([{ text: '❌ Отмена', callback_data: 'admin_back_to_panel' }]);
-
-    await ctx.editMessageText(message, {
-      reply_markup: {
-        inline_keyboard: keyboard
+      if (!user) {
+        await ctx.answerCbQuery('❌ Пользователь не найден');
+        return;
       }
-    });
 
-  } catch (error) {
-    console.error('Change plan error:', error);
-    await ctx.answerCbQuery('❌ Ошибка при изменении тарифа');
-  }
-});
+      let message = `💎 Изменение тарифа для ${user.firstName}\n\n`;
+      message += `Текущий тариф: ${SUBSCRIPTION_PLANS[user.subscription.plan]?.name || user.subscription.plan}\n\n`;
+      message += `Выберите новый тариф:`;
 
-// Установка нового тарифа для пользователя
-bot.action(/set_user_plan_(.+)_(.+)/, async (ctx) => {
-  if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
-    await ctx.answerCbQuery('❌ Доступ запрещен');
-    return;
-  }
+      // СОЗДАЕМ ПРАВИЛЬНЫЙ ФОРМАТ КЛАВИАТУРЫ - массив массивов
+      const keyboard = Object.entries(SUBSCRIPTION_PLANS).map(([key, plan]) => {
+        // Каждый тариф в отдельном массиве (ряду)
+        return [{
+          text: `${plan.name} (${plan.price > 0 ? `${plan.price} зв.` : 'Бесплатно'})`,
+          callback_data: `set_user_plan_${userId}_${key}`
+        }];
+      });
 
-  try {
-    const userId = ctx.match[1];
-    const planKey = ctx.match[2];
-    
-    const user = await User.findById(userId);
-    if (!user) {
-      await ctx.answerCbQuery('❌ Пользователь не найден');
+      // Добавляем кнопку отмены в отдельный ряд
+      keyboard.push([{ text: '❌ Отмена', callback_data: 'admin_back_to_panel' }]);
+
+      await ctx.editMessageText(message, {
+        reply_markup: {
+          inline_keyboard: keyboard
+        }
+      });
+
+    } catch (error) {
+      console.error('Change plan error:', error);
+      await ctx.answerCbQuery('❌ Ошибка при изменении тарифа');
+    }
+  });
+
+  // Установка нового тарифа для пользователя
+  bot.action(/set_user_plan_(.+)_(.+)/, async (ctx) => {
+    if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
+      await ctx.answerCbQuery('❌ Доступ запрещен');
       return;
     }
 
-    const plan = SUBSCRIPTION_PLANS[planKey];
-    if (!plan) {
-      await ctx.answerCbQuery('❌ Тариф не найден');
-      return;
-    }
+    try {
+      const userId = ctx.match[1];
+      const planKey = ctx.match[2];
 
-    // Сохраняем старый тариф для истории
-    const oldPlan = user.subscription.plan;
-
-    // Обновляем подписку пользователя
-    user.subscription.plan = planKey;
-    user.subscription.isTrial = false;
-    user.subscription.startDate = new Date();
-    user.subscription.endDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 дней
-    
-    // Обновляем лимиты
-    user.limits.channels = plan.channels;
-    user.limits.postsPerDay = plan.postsPerDay;
-    user.limits.postsToday = 0; // Сбрасываем счетчик
-
-    await user.save();
-
-    await ctx.answerCbQuery(`✅ Тариф изменен на ${plan.name}`);
-
-    const message = `✅ Тариф пользователя успешно изменен!\n\n` +
-      `👤 Пользователь: ${user.firstName}${user.username ? ` (@${user.username})` : ''}\n` +
-      `📊 Старый тариф: ${SUBSCRIPTION_PLANS[oldPlan]?.name || oldPlan}\n` +
-      `🎯 Новый тариф: ${plan.name}\n` +
-      `📅 Действует до: ${user.subscription.endDate.toLocaleDateString('ru-RU')}\n\n` +
-      `📈 Новые лимиты:\n` +
-      `• Каналов: ${plan.channels}\n` +
-      `• Постов в день: ${plan.postsPerDay}\n` +
-      `• AI-генерация: ${plan.aiAccess ? '✅' : '❌'}`;
-
-    await ctx.editMessageText(message, {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '👥 К пользователям', callback_data: 'admin_users' }],
-          [{ text: '🔙 В админ-панель', callback_data: 'admin_back_to_panel' }]
-        ]
+      const user = await User.findById(userId);
+      if (!user) {
+        await ctx.answerCbQuery('❌ Пользователь не найден');
+        return;
       }
-    });
 
-  } catch (error) {
-    console.error('Set user plan error:', error);
-    await ctx.answerCbQuery('❌ Ошибка при установке тарифа');
-  }
-});
+      const plan = SUBSCRIPTION_PLANS[planKey];
+      if (!plan) {
+        await ctx.answerCbQuery('❌ Тариф не найден');
+        return;
+      }
+
+      // Сохраняем старый тариф для истории
+      const oldPlan = user.subscription.plan;
+
+      // Обновляем подписку пользователя
+      user.subscription.plan = planKey;
+      user.subscription.isTrial = false;
+      user.subscription.startDate = new Date();
+      user.subscription.endDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 дней
+
+      // Обновляем лимиты
+      user.limits.channels = plan.channels;
+      user.limits.postsPerDay = plan.postsPerDay;
+      user.limits.postsToday = 0; // Сбрасываем счетчик
+
+      await user.save();
+
+      await ctx.answerCbQuery(`✅ Тариф изменен на ${plan.name}`);
+
+      const message = `✅ Тариф пользователя успешно изменен!\n\n` +
+        `👤 Пользователь: ${user.firstName}${user.username ? ` (@${user.username})` : ''}\n` +
+        `📊 Старый тариф: ${SUBSCRIPTION_PLANS[oldPlan]?.name || oldPlan}\n` +
+        `🎯 Новый тариф: ${plan.name}\n` +
+        `📅 Действует до: ${user.subscription.endDate.toLocaleDateString('ru-RU')}\n\n` +
+        `📈 Новые лимиты:\n` +
+        `• Каналов: ${plan.channels}\n` +
+        `• Постов в день: ${plan.postsPerDay}\n` +
+        `• AI-генерация: ${plan.aiAccess ? '✅' : '❌'}`;
+
+      await ctx.editMessageText(message, {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '👥 К пользователям', callback_data: 'admin_users' }],
+            [{ text: '🔙 В админ-панель', callback_data: 'admin_back_to_panel' }]
+          ]
+        }
+      });
+
+    } catch (error) {
+      console.error('Set user plan error:', error);
+      await ctx.answerCbQuery('❌ Ошибка при установке тарифа');
+    }
+  });
 
   // Сброс пробного периода
   bot.action(/admin_reset_trial_(.+)/, async (ctx) => {
@@ -1157,7 +1293,7 @@ bot.action(/set_user_plan_(.+)_(.+)/, async (ctx) => {
     }
 
     const userId = ctx.match[1];
-    
+
     try {
       const user = await User.findById(userId);
       if (!user) {
@@ -1209,30 +1345,30 @@ bot.action(/set_user_plan_(.+)_(.+)/, async (ctx) => {
   // Управление каналами
   bot.action('manage_channels', async (ctx) => {
     const channels = await Channel.find({ owner: ctx.user._id });
-    
+
     if (channels.length === 0) {
       await ctx.editMessageText('❌ У вас нет подключенных каналов.');
       return;
     }
-    
+
     let message = '⚙️ Управление каналами:\n\n';
     const keyboard = [];
-    
+
     channels.forEach(channel => {
       message += `🔸 ${channel.title}\n`;
       message += `Режим: ${channel.settings.mode}\n`;
       message += `RSS: ${channel.rssSources.length} источников\n\n`;
-      
+
       keyboard.push([
-        { 
-          text: `⚙️ ${channel.title.substring(0, 20)}`, 
-          callback_data: `channel_detail_${channel._id}` 
+        {
+          text: `⚙️ ${channel.title.substring(0, 20)}`,
+          callback_data: `channel_detail_${channel._id}`
         }
       ]);
     });
-    
+
     keyboard.push([{ text: '🔙 Назад', callback_data: 'main_menu' }]);
-    
+
     await ctx.editMessageText(message, {
       reply_markup: { inline_keyboard: keyboard }
     });
@@ -1242,7 +1378,7 @@ bot.action(/set_user_plan_(.+)_(.+)/, async (ctx) => {
   bot.action(/channel_detail_(.+)/, async (ctx) => {
     const channelId = ctx.match[1];
     const channel = await Channel.findById(channelId);
-    
+
     if (!channel) {
       await ctx.answerCbQuery('❌ Канал не найден');
       return;
@@ -1252,14 +1388,14 @@ bot.action(/set_user_plan_(.+)_(.+)/, async (ctx) => {
       await ctx.answerCbQuery('❌ Доступ запрещен');
       return;
     }
-    
+
     const message = `📊 Канал: ${channel.title}\n\n` +
       `🔧 Режим: ${channel.settings.mode}\n` +
       `📰 RSS источников: ${channel.rssSources.length}\n` +
       `🤖 AI стиль: ${channel.aiSettings.tone}\n` +
       `🚀 Автопостинг: ${channel.settings.autoPublish ? '✅' : '❌'}\n\n` +
       `Выберите действие:`;
-    
+
     await ctx.editMessageText(message, {
       reply_markup: {
         inline_keyboard: [
@@ -1283,11 +1419,11 @@ bot.action(/set_user_plan_(.+)_(.+)/, async (ctx) => {
   bot.action(/channel_settings_(.+)/, async (ctx) => {
     const channelId = ctx.match[1];
     const channel = await Channel.findById(channelId);
-    
+
     const message = `⚙️ Настройки канала: ${channel.title}\n\n` +
       `Текущий режим: ${channel.settings.mode}\n` +
       `Выберите новый режим работы:`;
-    
+
     await ctx.editMessageText(message, {
       reply_markup: {
         inline_keyboard: [
@@ -1313,7 +1449,7 @@ bot.action(/set_user_plan_(.+)_(.+)/, async (ctx) => {
   bot.action(/set_mode_(.+)_(.+)/, async (ctx) => {
     const channelId = ctx.match[1];
     const mode = ctx.match[2];
-    
+
     const channel = await Channel.findById(channelId);
     if (!channel) {
       await ctx.answerCbQuery('❌ Канал не найден');
@@ -1322,7 +1458,7 @@ bot.action(/set_user_plan_(.+)_(.+)/, async (ctx) => {
 
     channel.settings.mode = mode;
     await channel.save();
-    
+
     await ctx.answerCbQuery(`✅ Режим изменен на: ${mode}`);
     await ctx.editMessageText(`✅ Режим канала "${channel.title}" изменен на: ${mode}\n\nКанал готов к работе!`);
   });
@@ -1330,7 +1466,7 @@ bot.action(/set_user_plan_(.+)_(.+)/, async (ctx) => {
   // Переключение автопостинга
   bot.action(/toggle_autopost_(.+)/, async (ctx) => {
     const channelId = ctx.match[1];
-    
+
     const channel = await Channel.findById(channelId);
     if (!channel) {
       await ctx.answerCbQuery('❌ Канал не найден');
@@ -1339,7 +1475,7 @@ bot.action(/set_user_plan_(.+)_(.+)/, async (ctx) => {
 
     channel.settings.autoPublish = !channel.settings.autoPublish;
     await channel.save();
-    
+
     const status = channel.settings.autoPublish ? 'включен' : 'выключен';
     await ctx.answerCbQuery(`✅ Автопостинг ${status}`);
     await ctx.editMessageText(`✅ Автопостинг для канала "${channel.title}" ${status}!`);
@@ -1349,9 +1485,9 @@ bot.action(/set_user_plan_(.+)_(.+)/, async (ctx) => {
   bot.action(/manage_rss_(.+)/, async (ctx) => {
     const channelId = ctx.match[1];
     const channel = await Channel.findById(channelId);
-    
+
     let message = `📰 RSS источники для: ${channel.title}\n\n`;
-    
+
     if (channel.rssSources.length === 0) {
       message += '❌ Нет добавленных RSS источников\n\n';
     } else {
@@ -1361,15 +1497,15 @@ bot.action(/set_user_plan_(.+)_(.+)/, async (ctx) => {
         message += `   Исключить: ${source.excludeKeywords.join(', ') || 'нет'}\n\n`;
       });
     }
-    
+
     message += 'Выберите действие:';
-    
+
     await ctx.editMessageText(message, {
       reply_markup: {
         inline_keyboard: [
           [{ text: '➕ Добавить RSS', callback_data: `rss_setup_${channel._id}` }],
-          channel.rssSources.length > 0 ? 
-            [{ text: '🗑️ Удалить RSS', callback_data: `delete_rss_${channel._id}` }] : 
+          channel.rssSources.length > 0 ?
+            [{ text: '🗑️ Удалить RSS', callback_data: `delete_rss_${channel._id}` }] :
             [],
           [{ text: '🔙 Назад', callback_data: `channel_detail_${channel._id}` }]
         ]
@@ -1388,12 +1524,12 @@ bot.action(/set_user_plan_(.+)_(.+)/, async (ctx) => {
   bot.action(/ai_settings_(.+)/, async (ctx) => {
     const channelId = ctx.match[1];
     const channel = await Channel.findById(channelId);
-    
+
     const message = `🤖 Настройки AI для: ${channel.title}\n\n` +
       `Текущий стиль: ${channel.aiSettings.tone}\n` +
       `Темы: ${channel.aiSettings.topics.join(', ') || 'не заданы'}\n\n` +
       `Выберите стиль генерации:`;
-    
+
     await ctx.editMessageText(message, {
       reply_markup: {
         inline_keyboard: [
@@ -1420,11 +1556,11 @@ bot.action(/set_user_plan_(.+)_(.+)/, async (ctx) => {
   bot.action(/set_ai_tone_(.+)_(.+)/, async (ctx) => {
     const channelId = ctx.match[1];
     const tone = ctx.match[2];
-    
+
     const channel = await Channel.findById(channelId);
     channel.aiSettings.tone = tone;
     await channel.save();
-    
+
     await ctx.answerCbQuery(`✅ Стиль изменен на: ${tone}`);
     await ctx.editMessageText(`✅ Стиль AI для канала "${channel.title}" изменен на: ${tone}`);
   });
@@ -1432,23 +1568,23 @@ bot.action(/set_user_plan_(.+)_(.+)/, async (ctx) => {
   // Запуск сцены генерации AI поста
   bot.action(/ai_generate_(.+)/, async (ctx) => {
     const channelId = ctx.match[1];
-    
+
     try {
       const user = await UserService.getOrCreateUser(ctx.from);
-      
+
       if (!user.subscription.isTrial && !user.subscription.aiAccess) {
         await ctx.answerCbQuery('❌ AI-генерация доступна только на платных тарифах');
         return;
       }
-      
+
       const canPost = await UserService.canUserPost(user);
       if (!canPost) {
         await ctx.answerCbQuery('❌ Вы достигли дневного лимита постов');
         return;
       }
-      
+
       await ctx.answerCbQuery();
-      await ctx.scene.enter('ai-post-scene', { 
+      await ctx.scene.enter('ai-post-scene', {
         channelId: channelId,
         user: user
       });
@@ -1461,19 +1597,19 @@ bot.action(/set_user_plan_(.+)_(.+)/, async (ctx) => {
   // Статистика каналов
   bot.action('channel_stats', async (ctx) => {
     const channels = await Channel.find({ owner: ctx.user._id });
-    
+
     let message = `📊 Статистика:\n\n` +
       `Каналов: ${channels.length}/${ctx.user.limits.channels}\n` +
       `Постов сегодня: ${ctx.user.limits.postsToday}/${ctx.user.limits.postsPerDay}\n` +
       `Режим: ${ctx.user.subscription.isTrial ? 'Пробный' : ctx.user.subscription.plan}\n\n`;
-    
+
     if (channels.length > 0) {
       message += `Ваши каналы:\n`;
       channels.forEach(channel => {
         message += `• ${channel.title} (${channel.settings.mode})\n`;
       });
     }
-    
+
     await ctx.editMessageText(message, {
       reply_markup: {
         inline_keyboard: [
@@ -1494,17 +1630,17 @@ bot.action(/set_user_plan_(.+)_(.+)/, async (ctx) => {
     if (ctx.session && ctx.session.waitingForUserSearch) {
       const searchTerm = ctx.message.text;
       delete ctx.session.waitingForUserSearch;
-      
+
       let user;
-      
+
       // Поиск по ID
       if (/^\d+$/.test(searchTerm)) {
         user = await User.findOne({ telegramId: parseInt(searchTerm) });
-      } 
+      }
       // Поиск по username
       else if (searchTerm.startsWith('@')) {
         user = await User.findOne({ username: searchTerm.substring(1) });
-      } 
+      }
       // Поиск по тексту
       else {
         user = await User.findOne({
@@ -1514,12 +1650,12 @@ bot.action(/set_user_plan_(.+)_(.+)/, async (ctx) => {
           ]
         });
       }
-      
+
       if (!user) {
         await ctx.reply('❌ Пользователь не найден');
         return;
       }
-      
+
       const message = `👤 Информация о пользователе:\n\n` +
         `Имя: ${user.firstName}${user.lastName ? ' ' + user.lastName : ''}\n` +
         `Username: @${user.username || 'не указан'}\n` +
@@ -1528,7 +1664,7 @@ bot.action(/set_user_plan_(.+)_(.+)/, async (ctx) => {
         `Пробный период: ${user.subscription.isTrial ? '✅ до ' + user.subscription.trialEndDate.toLocaleDateString('ru-RU') : '❌'}\n` +
         `Заблокирован: ${user.isBlocked ? '✅' : '❌'}\n` +
         `Регистрация: ${user.createdAt.toLocaleDateString('ru-RU')}`;
-      
+
       await ctx.reply(message, {
         reply_markup: {
           inline_keyboard: [

@@ -4,7 +4,7 @@ const { SUBSCRIPTION_PLANS } = require('../config');
 class UserService {
   async getOrCreateUser(telegramUser) {
     let user = await User.findOne({ telegramId: telegramUser.id });
-    
+
     if (!user) {
       user = new User({
         telegramId: telegramUser.id,
@@ -14,8 +14,37 @@ class UserService {
       });
       await user.save();
     }
-    
+
     return user;
+  }
+  /** Проверяет доступ пользователя к AI-генерации */
+  static async hasAIAccess(user) {
+    // Обновляем данные пользователя из БД
+    const currentUser = await User.findById(user._id);
+    const userPlan = SUBSCRIPTION_PLANS[currentUser.subscription.plan];
+
+    return currentUser.subscription.isTrial || userPlan?.aiAccess;
+  }
+  /** Проверяет возможность публикации поста */
+  static async canUserPost(user) {
+    const currentUser = await User.findById(user._id);
+
+    // Проверяем сброс дневного лимита
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    if (currentUser.limits.lastReset < today) {
+      currentUser.limits.postsToday = 0;
+      currentUser.limits.lastReset = today;
+      await currentUser.save();
+    }
+
+    return currentUser.limits.postsToday < currentUser.limits.postsPerDay;
+  }
+  // Упрощенная проверка AI доступа
+  async checkAIAccess(user) {
+    const userPlan = SUBSCRIPTION_PLANS[user.subscription.plan];
+    return user.subscription.isTrial || userPlan?.aiAccess;
   }
 
   async getUserById(userId) {
@@ -24,11 +53,11 @@ class UserService {
 
   async canUserPost(user) {
     await this.resetDailyLimits(user);
-    
+
     if (user.subscription.isTrial) {
       return true;
     }
-    
+
     const plan = SUBSCRIPTION_PLANS[user.subscription.plan];
     return user.limits.postsToday < user.limits.postsPerDay;
   }
@@ -41,7 +70,7 @@ class UserService {
   async resetDailyLimits(user) {
     const now = new Date();
     const lastReset = new Date(user.limits.lastReset);
-    
+
     if (now.toDateString() !== lastReset.toDateString()) {
       user.limits.postsToday = 0;
       user.limits.lastReset = now;
@@ -57,7 +86,7 @@ class UserService {
   async updateSubscription(userId, plan) {
     const planConfig = SUBSCRIPTION_PLANS[plan];
     if (!planConfig) return null;
-    
+
     return await User.findByIdAndUpdate(
       userId,
       {
