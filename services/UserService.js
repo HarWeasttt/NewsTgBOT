@@ -28,8 +28,15 @@ class UserService {
   /** Проверяет возможность публикации поста */
   static async canUserPost(user) {
     const currentUser = await User.findById(user._id);
+    const userPlan = SUBSCRIPTION_PLANS[currentUser.subscription.plan];
 
-    // Проверяем сброс дневного лимита
+    // Проверяем активна ли подписка
+    if (!currentUser.subscription.isTrial &&
+      currentUser.subscription.endDate < new Date()) {
+      return false;
+    }
+
+    // Проверяем дневной лимит
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
@@ -41,6 +48,14 @@ class UserService {
 
     return currentUser.limits.postsToday < currentUser.limits.postsPerDay;
   }
+  /** Увеличивает счетчик постов */
+  static async incrementPostCount(userId) {
+    const user = await User.findById(userId);
+    user.limits.postsToday += 1;
+    await user.save();
+    return user.limits.postsToday;
+  }
+
   // Упрощенная проверка AI доступа
   async checkAIAccess(user) {
     const userPlan = SUBSCRIPTION_PLANS[user.subscription.plan];

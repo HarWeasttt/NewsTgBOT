@@ -2,8 +2,8 @@ const User = require('../../models/User');
 const Channel = require('../../models/Channel');
 const UserService = require('../../services/UserService');
 const AIService = require('../../services/AIService');
-const { userMainKeyboard, aiTonesKeyboard, adminMainKeyboard } = require('../keyboards/keyboards');
-const { BOT_CONFIG, SUBSCRIPTION_PLANS } = require('../../config');
+const { userMainKeyboard, aiTonesKeyboard, postTypesKeyboard, adminMainKeyboard } = require('../keyboards/keyboards');
+const { BOT_CONFIG, SUBSCRIPTION_PLANS, POST_TYPES, AI_PROMPTS } = require('../../config');
 
 function setupUserHandlers(bot) {
   // Команда /admin - должна обрабатываться ПЕРВОЙ
@@ -50,6 +50,7 @@ function setupUserHandlers(bot) {
 🔹 *Управление каналами* - добавьте бота как администратора в ваш канал
 🔹 *RSS ленты* - настройте автоматический постинг новостей
 🔹 *AI Генерация* - создавайте уникальный контент с помощью нейросети
+🔹 *Планировщик* - настройте расписание публикаций
 🔹 *Тарифы* - выберите подходящий план подписки
 
 Для начала работы добавьте бота в ваш канал как администратора!`, {
@@ -65,6 +66,7 @@ function setupUserHandlers(bot) {
 🔹 *Управление каналами* - добавьте бота как администратора в ваш канал
 🔹 *RSS ленты* - настройте автоматический постинг новостей
 🔹 *AI Генерация* - создавайте уникальный контент с помощью нейросети
+🔹 *Планировщик* - настройте расписание публикаций
 🔹 *Тарифы* - выберите подходящий план подписки
 
 Для начала работы добавьте бота в ваш канал как администратора!`, { parse_mode: 'Markdown' });
@@ -86,24 +88,349 @@ function setupUserHandlers(bot) {
     let message = `📊 Ваши каналы (${channels.length}/${ctx.user.limits.channels}):\n\n`;
 
     for (const channel of channels) {
+      // Безопасная проверка расписания (теперь внутри settings)
+      const schedule = channel.settings?.schedule || {};
+      const scheduleStatus = schedule.enabled ? 
+        `⏰ ${(schedule.times || []).length} раз в день` : '❌ Выкл';
+
       message += `🔸 ${channel.title}\n`;
-      message += `Режим: ${channel.settings.mode}\n`;
-      message += `RSS источников: ${channel.rssSources.length}\n`;
-      message += `Автопостинг: ${channel.settings.autoPublish ? '✅' : '❌'}\n\n`;
+      message += `Режим: ${channel.settings?.mode || 'combined'}\n`;
+      message += `RSS источников: ${channel.rssSources?.length || 0}\n`;
+      message += `Расписание: ${scheduleStatus}\n\n`;
     }
 
     await ctx.reply(message, {
       reply_markup: {
         inline_keyboard: [
           [{ text: '➕ Добавить канал', callback_data: 'add_channel' }],
-          [{ text: '⚙️ Управление каналами', callback_data: 'manage_channels' }]
+          [{ text: '⚙️ Управление каналами', callback_data: 'manage_channels' }],
+          [{ text: '⏰ Настроить расписание', callback_data: 'schedule_menu' }]
         ]
       }
     });
   });
 
+  // Меню расписания
+  bot.action('schedule_menu', async (ctx) => {
+    const channels = await Channel.find({ owner: ctx.user._id });
+
+    if (channels.length === 0) {
+      await ctx.answerCbQuery('❌ У вас нет подключенных каналов');
+      return;
+    }
+
+    // Создаем клавиатуру с безопасными проверками
+    const keyboard = channels.map(channel => {
+      // Безопасная проверка расписания (теперь внутри settings)
+      const schedule = channel.settings?.schedule || {};
+      const isEnabled = schedule.enabled || false;
+
+      return [
+        {
+          text: `${channel.title} ${isEnabled ? '✅' : '❌'}`,
+          callback_data: `schedule_channel_${channel._id}`
+        }
+      ];
+    });
+
+    keyboard.push([{ text: '🔙 Назад', callback_data: 'main_menu' }]);
+
+    await ctx.editMessageText('⏰ Управление расписанием постов\n\nВыберите канал для настройки:', {
+      reply_markup: {
+        inline_keyboard: keyboard
+      }
+    });
+  });
+
+  // Настройка расписания для канала
+  bot.action(/schedule_channel_(.+)/, async (ctx) => {
+    const channelId = ctx.match[1];
+    const channel = await Channel.findById(channelId);
+
+    if (!channel) {
+      await ctx.answerCbQuery('❌ Канал не найден');
+      return;
+    }
+
+    // Инициализируем schedule если его нет (теперь внутри settings)
+    if (!channel.settings) {
+      channel.settings = {
+        mode: 'combined',
+        autoPublish: true,
+        schedule: {
+          enabled: false,
+          times: []
+        }
+      };
+    } else if (!channel.settings.schedule) {
+      channel.settings.schedule = {
+        enabled: false,
+        times: []
+      };
+    }
+
+    await channel.save();
+
+    const schedule = channel.settings.schedule;
+    const scheduleText = schedule.times.length > 0 ?
+      schedule.times.map(time => `🕒 ${time}`).join('\n') :
+      '❌ Расписание не настроено';
+
+    const message = `⏰ Расписание для: ${channel.title}\n\n` +
+      `Статус: ${schedule.enabled ? '✅ Включено' : '❌ Выключено'}\n` +
+      `Время публикаций:\n${scheduleText}\n\n` +
+      `Выберите действие:`;
+
+    await ctx.editMessageText(message, {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '➕ Добавить время', callback_data: `schedule_add_time_${channel._id}` },
+            { text: '🗑️ Очистить расписание', callback_data: `schedule_clear_${channel._id}` }
+          ],
+          [
+            {
+              text: schedule.enabled ? '❌ Выключить' : '✅ Включить',
+              callback_data: `schedule_toggle_${channel._id}`
+            }
+          ],
+          [
+            { text: '🔙 Назад', callback_data: 'schedule_menu' }
+          ]
+        ]
+      }
+    });
+  });
+
+  // Добавление времени в расписание
+  bot.action(/schedule_add_time_(.+)/, async (ctx) => {
+    const channelId = ctx.match[1];
+
+    ctx.session = ctx.session || {};
+    ctx.session.scheduleChannelId = channelId;
+    ctx.session.waitingForScheduleTime = true;
+
+    await ctx.editMessageText(`⏰ Добавление времени для публикации\n\n` +
+      `Введите время в формате ЧЧ:MM (например, 09:00, 14:30, 18:45)\n` +
+      `Можно добавить несколько времен через запятую: 09:00, 14:30, 19:00\n\n` +
+      `❌ Для отмены введите "отмена"`);
+  });
+
+  // Обработка ввода времени расписания
+  bot.on('text', async (ctx) => {
+    if (ctx.session && ctx.session.waitingForScheduleTime) {
+      console.log('🕒 Processing schedule time input:', {
+        session: ctx.session,
+        input: ctx.message.text,
+        channelId: ctx.session.scheduleChannelId
+      });
+
+      const input = ctx.message.text.trim();
+
+      if (input.toLowerCase() === 'отмена') {
+        delete ctx.session.waitingForScheduleTime;
+        delete ctx.session.scheduleChannelId;
+        await ctx.reply('❌ Настройка расписания отменена');
+        return;
+      }
+
+      const times = input.split(',').map(t => t.trim());
+      const validTimes = [];
+      const invalidTimes = [];
+
+      // Валидация времени
+      for (const time of times) {
+        if (/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/.test(time)) {
+          validTimes.push(time);
+        } else {
+          invalidTimes.push(time);
+        }
+      }
+
+      if (validTimes.length === 0) {
+        await ctx.reply('❌ Неверный формат времени. Используйте ЧЧ:MM (например, 09:00)');
+        return;
+      }
+
+      const channel = await Channel.findById(ctx.session.scheduleChannelId);
+      if (!channel) {
+        await ctx.reply('❌ Канал не найден');
+        return;
+      }
+
+      console.log('📋 Channel before update:', {
+        title: channel.title,
+        settings: channel.settings,
+        hasSchedule: !!(channel.settings?.schedule)
+      });
+
+      // Инициализируем settings и schedule если их нет (теперь внутри settings)
+      if (!channel.settings) {
+        channel.settings = {
+          mode: 'combined',
+          autoPublish: true,
+          schedule: {
+            enabled: false,
+            times: []
+          }
+        };
+      } else if (!channel.settings.schedule) {
+        channel.settings.schedule = {
+          enabled: false,
+          times: []
+        };
+      }
+
+      // Безопасная работа с times (теперь внутри settings.schedule)
+      const schedule = channel.settings.schedule;
+      const existingTimes = new Set(schedule.times || []);
+      const beforeCount = existingTimes.size;
+      validTimes.forEach(time => existingTimes.add(time));
+      const afterCount = existingTimes.size;
+      
+      schedule.times = Array.from(existingTimes).sort();
+
+      console.log('📝 Times update:', {
+        validTimes,
+        beforeCount,
+        afterCount,
+        finalTimes: schedule.times
+      });
+
+      try {
+        await channel.save();
+        console.log('💾 Channel saved successfully');
+        
+        let message = `✅ Время добавлено в расписание:\n` +
+          validTimes.map(t => `🕒 ${t}`).join('\n');
+
+        if (invalidTimes.length > 0) {
+          message += `\n\n❌ Некорректное время (игнорировано): ${invalidTimes.join(', ')}`;
+        }
+
+        // Сбрасываем состояние
+        delete ctx.session.waitingForScheduleTime;
+        delete ctx.session.scheduleChannelId;
+
+        await ctx.reply(message);
+
+        // Показываем обновленное расписание
+        const scheduleText = schedule.times.length > 0 ?
+          schedule.times.map(time => `🕒 ${time}`).join('\n') :
+          '❌ Расписание не настроено';
+
+        await ctx.reply(`📅 Текущее расписание:\n${scheduleText}\n\nСтатус: ${schedule.enabled ? '✅ Включено' : '❌ Выключено'}`);
+
+      } catch (error) {
+        console.error('❌ Error saving channel:', error);
+        await ctx.reply('❌ Ошибка при сохранении расписания');
+        return;
+      }
+
+    } else if (ctx.session && ctx.session.waitingForAITopic) {
+      // Обработка текста для AI
+      const topic = ctx.message.text;
+      const tone = ctx.session.aiTone || 'professional';
+      const postType = ctx.session.postType || 'news';
+
+      await ctx.reply('🔄 Генерирую пост...');
+
+      try {
+        const post = await AIService.generatePost(topic, tone, postType);
+
+        await ctx.reply(`✅ Сгенерированный пост (${POST_TYPES[postType].name}):\n\n${post}\n\nВы можете скопировать этот текст и опубликовать в вашем канале.`);
+
+        // Сбрасываем состояние
+        delete ctx.session.waitingForAITopic;
+        delete ctx.session.aiTone;
+        delete ctx.session.postType;
+
+      } catch (error) {
+        await ctx.reply('❌ Произошла ошибка при генерации поста. Попробуйте позже.');
+      }
+    }
+  });
+
+  // Очистка расписания
+  bot.action(/schedule_clear_(.+)/, async (ctx) => {
+    const channelId = ctx.match[1];
+    const channel = await Channel.findById(channelId);
+
+    if (!channel) {
+      await ctx.answerCbQuery('❌ Канал не найден');
+      return;
+    }
+
+    // Инициализируем settings и schedule если их нет
+    if (!channel.settings) {
+      channel.settings = {
+        mode: 'combined',
+        autoPublish: true,
+        schedule: {
+          enabled: false,
+          times: []
+        }
+      };
+    } else if (!channel.settings.schedule) {
+      channel.settings.schedule = {
+        enabled: false,
+        times: []
+      };
+    }
+
+    channel.settings.schedule.times = [];
+    await channel.save();
+
+    await ctx.answerCbQuery('✅ Расписание очищено');
+    await ctx.editMessageText(`✅ Расписание для канала "${channel.title}" очищено`);
+  });
+
+  // Переключение расписания
+  bot.action(/schedule_toggle_(.+)/, async (ctx) => {
+    const channelId = ctx.match[1];
+    const channel = await Channel.findById(channelId);
+
+    if (!channel) {
+      await ctx.answerCbQuery('❌ Канал не найден');
+      return;
+    }
+
+    // Инициализируем settings и schedule если их нет
+    if (!channel.settings) {
+      channel.settings = {
+        mode: 'combined',
+        autoPublish: true,
+        schedule: {
+          enabled: false,
+          times: []
+        }
+      };
+    } else if (!channel.settings.schedule) {
+      channel.settings.schedule = {
+        enabled: false,
+        times: []
+      };
+    }
+
+    const schedule = channel.settings.schedule;
+    
+    // Безопасная проверка times
+    const timesCount = (schedule.times || []).length;
+    if (timesCount === 0) {
+      await ctx.answerCbQuery('❌ Сначала добавьте время публикации');
+      return;
+    }
+
+    schedule.enabled = !schedule.enabled;
+    await channel.save();
+
+    const status = schedule.enabled ? 'включено' : 'выключено';
+    await ctx.answerCbQuery(`✅ Расписание ${status}`);
+    await ctx.editMessageText(`✅ Расписание для канала "${channel.title}" ${status}!`);
+  });
+
+  // AI Генерация с выбором типа поста
   bot.hears('🤖 AI Генерация', async (ctx) => {
-    // Получаем актуальные данные пользователя из БД
     const currentUser = await User.findById(ctx.user._id);
     const userPlan = SUBSCRIPTION_PLANS[currentUser.subscription.plan];
 
@@ -115,16 +442,31 @@ function setupUserHandlers(bot) {
       now: new Date()
     });
 
-    // Проверяем доступ к AI
     const hasAIAccess = currentUser.subscription.isTrial || userPlan?.aiAccess;
 
     if (!hasAIAccess) {
       return ctx.reply('❌ AI-генерация доступна только на платных тарифах. Обновите подписку!');
     }
 
-    await ctx.reply('🎯 Выберите стиль поста:', {
-      reply_markup: aiTonesKeyboard
+    await ctx.reply('🎯 Выберите тип поста:', {
+      reply_markup: postTypesKeyboard
     });
+  });
+
+  // Обработка выбора типа поста
+  bot.action(/post_type_(.+)/, async (ctx) => {
+    const postType = ctx.match[1];
+    ctx.session = ctx.session || {};
+    ctx.session.postType = postType;
+
+    const postTypeInfo = POST_TYPES[postType];
+
+    await ctx.editMessageText(
+      `📝 Тип поста: ${postTypeInfo.name}\n\n` +
+      `📋 ${postTypeInfo.description}\n\n` +
+      `🎯 Примеры тем:\n${postTypeInfo.examples.join('\n')}\n\n` +
+      `Теперь выберите стиль написания:`
+    );
   });
 
   // Обработка выбора стиля AI
@@ -133,31 +475,20 @@ function setupUserHandlers(bot) {
     ctx.session = ctx.session || {};
     ctx.session.aiTone = tone;
 
-    await ctx.editMessageText(`Выбран стиль: ${tone}\n\nТеперь отправьте тему для поста:`);
+    const postType = ctx.session.postType || 'news';
+    const postTypeInfo = POST_TYPES[postType];
+
+    await ctx.editMessageText(
+      `📝 Тип: ${postTypeInfo.name}\n` +
+      `🎨 Стиль: ${tone}\n\n` +
+      `Теперь отправьте тему для поста.\n\n` +
+      `💡 Рекомендации:\n` +
+      `• Будьте конкретны в описании темы\n` +
+      `• Укажите ключевые моменты\n` +
+      `• Добавьте контекст, если необходимо\n\n` +
+      `Например: "${postTypeInfo.examples[0]}"`
+    );
     ctx.session.waitingForAITopic = true;
-  });
-
-  // Обработка текста для AI
-  bot.on('text', async (ctx) => {
-    if (ctx.session && ctx.session.waitingForAITopic) {
-      const topic = ctx.message.text;
-      const tone = ctx.session.aiTone || 'professional';
-
-      await ctx.reply('🔄 Генерирую пост...');
-
-      try {
-        const post = await AIService.generatePost(topic, tone);
-
-        await ctx.reply(`✅ Сгенерированный пост:\n\n${post}\n\nВы можете скопировать этот текст и опубликовать в вашем канале.`);
-
-        // Сбрасываем состояние
-        delete ctx.session.waitingForAITopic;
-        delete ctx.session.aiTone;
-
-      } catch (error) {
-        await ctx.reply('❌ Произошла ошибка при генерации поста. Попробуйте позже.');
-      }
-    }
   });
 
   // RSS Ленты
@@ -187,12 +518,11 @@ function setupUserHandlers(bot) {
     await ctx.answerCbQuery();
   });
 
-  // AI Генерация с выбором канала - ИСПРАВЛЕННАЯ ВЕРСИЯ
+  // AI Генерация с выбором канала
   bot.action(/ai_generate_(.+)/, async (ctx) => {
     const channelId = ctx.match[1];
 
     try {
-      // Получаем актуальные данные пользователя
       const currentUser = await User.findById(ctx.user._id);
       const userPlan = SUBSCRIPTION_PLANS[currentUser.subscription.plan];
 
@@ -203,14 +533,12 @@ function setupUserHandlers(bot) {
         aiAccess: userPlan?.aiAccess
       });
 
-      // Проверяем доступ к AI
       const hasAIAccess = currentUser.subscription.isTrial || userPlan?.aiAccess;
       if (!hasAIAccess) {
         await ctx.answerCbQuery('❌ AI-генерация доступна только на платных тарифах');
         return;
       }
 
-      // Проверяем дневной лимит
       const canPost = await UserService.canUserPost(currentUser);
       if (!canPost) {
         await ctx.answerCbQuery('❌ Вы достигли дневного лимита постов');
@@ -236,9 +564,18 @@ function setupUserHandlers(bot) {
     const keyboard = [];
 
     channels.forEach(channel => {
+      // Безопасная проверка расписания (теперь внутри settings)
+      const schedule = channel.settings?.schedule || {};
+      const scheduleStatus = schedule.enabled ? 
+        `⏰ ${(schedule.times || []).length} раз в день` : '❌ Выкл';
+
+      const mode = channel.settings?.mode || 'combined';
+      const rssCount = channel.rssSources?.length || 0;
+
       message += `🔸 ${channel.title}\n`;
-      message += `Режим: ${channel.settings.mode}\n`;
-      message += `RSS: ${channel.rssSources.length} источников\n\n`;
+      message += `Режим: ${mode}\n`;
+      message += `RSS: ${rssCount} источников\n`;
+      message += `Расписание: ${scheduleStatus}\n\n`;
 
       keyboard.push([
         {
@@ -270,11 +607,17 @@ function setupUserHandlers(bot) {
       return;
     }
 
+    // Безопасная проверка расписания (теперь внутри settings)
+    const schedule = channel.settings?.schedule || {};
+    const scheduleStatus = schedule.enabled ? 
+      `⏰ ${(schedule.times || []).length} раз в день` : '❌ Выключено';
+
     const message = `📊 Канал: ${channel.title}\n\n` +
-      `🔧 Режим: ${channel.settings.mode}\n` +
-      `📰 RSS источников: ${channel.rssSources.length}\n` +
-      `🤖 AI стиль: ${channel.aiSettings.tone}\n` +
-      `🚀 Автопостинг: ${channel.settings.autoPublish ? '✅' : '❌'}\n\n` +
+      `🔧 Режим: ${channel.settings?.mode || 'combined'}\n` +
+      `📰 RSS источников: ${channel.rssSources?.length || 0}\n` +
+      `🤖 AI стиль: ${channel.aiSettings?.tone || 'professional'}\n` +
+      `🚀 Автопостинг: ${channel.settings?.autoPublish ? '✅' : '❌'}\n` +
+      `⏰ Расписание: ${scheduleStatus}\n\n` +
       `Выберите действие:`;
 
     await ctx.editMessageText(message, {
@@ -286,10 +629,73 @@ function setupUserHandlers(bot) {
           ],
           [
             { text: '🚀 Создать пост', callback_data: `ai_generate_${channel._id}` },
+            { text: '⏰ Расписание', callback_data: `schedule_settings_${channel._id}` }
+          ],
+          [
             { text: '⚙️ Настройки', callback_data: `channel_settings_${channel._id}` }
           ],
           [
             { text: '🔙 Назад', callback_data: 'manage_channels' }
+          ]
+        ]
+      }
+    });
+  });
+
+  // Настройки расписания для канала
+  bot.action(/schedule_settings_(.+)/, async (ctx) => {
+    const channelId = ctx.match[1];
+    const channel = await Channel.findById(channelId);
+
+    if (!channel) {
+      await ctx.answerCbQuery('❌ Канал не найден');
+      return;
+    }
+
+    // Инициализируем settings и schedule если их нет
+    if (!channel.settings) {
+      channel.settings = {
+        mode: 'combined',
+        autoPublish: true,
+        schedule: {
+          enabled: false,
+          times: []
+        }
+      };
+    } else if (!channel.settings.schedule) {
+      channel.settings.schedule = {
+        enabled: false,
+        times: []
+      };
+    }
+
+    await channel.save();
+
+    const schedule = channel.settings.schedule;
+    const scheduleText = schedule.times.length > 0 ?
+      schedule.times.map(time => `🕒 ${time}`).join('\n') :
+      '❌ Расписание не настроено';
+
+    const message = `⏰ Расписание для: ${channel.title}\n\n` +
+      `Статус: ${schedule.enabled ? '✅ Включено' : '❌ Выключено'}\n` +
+      `Время публикаций:\n${scheduleText}\n\n` +
+      `Выберите действие:`;
+
+    await ctx.editMessageText(message, {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '➕ Добавить время', callback_data: `schedule_add_time_${channel._id}` },
+            { text: '🗑️ Очистить расписание', callback_data: `schedule_clear_${channel._id}` }
+          ],
+          [
+            {
+              text: schedule.enabled ? '❌ Выключить' : '✅ Включить',
+              callback_data: `schedule_toggle_${channel._id}`
+            }
+          ],
+          [
+            { text: '🔙 Назад', callback_data: `channel_detail_${channel._id}` }
           ]
         ]
       }
@@ -444,14 +850,11 @@ function setupUserHandlers(bot) {
     await ctx.editMessageText(`✅ Автопостинг для канала "${channel.title}" ${status}!`);
   });
 
-  // Удаление RSS (заглушка)
+  // Удаление RSS
   bot.action(/delete_rss_(.+)/, async (ctx) => {
-    await ctx.answerCbQuery('🗑️ Удаление RSS будет доступно в следующем обновлении');
-  });
-
-  // Настройки расписания (заглушка)
-  bot.action(/schedule_settings_(.+)/, async (ctx) => {
-    await ctx.answerCbQuery('⏰ Настройки расписания будут доступны в следующем обновлении');
+    const channelId = ctx.match[1];
+    await ctx.scene.enter('rss-delete-scene', { channelId });
+    await ctx.answerCbQuery();
   });
 
   // Главное меню
@@ -491,6 +894,7 @@ function setupUserHandlers(bot) {
         message += `Каналов: ${plan.channels}\n`;
         message += `Постов в день: ${plan.postsPerDay}\n`;
         message += `AI-генерация: ${plan.aiAccess ? '✅' : '❌'}\n`;
+        message += `Планировщик: ${plan.scheduling ? '✅' : '❌'}\n`;
         message += `Цена: ${plan.price > 0 ? `${plan.price} звезд` : 'Бесплатно'}\n\n`;
       }
     });
@@ -514,7 +918,11 @@ function setupUserHandlers(bot) {
     if (channels.length > 0) {
       message += `Ваши каналы:\n`;
       channels.forEach(channel => {
-        message += `• ${channel.title} (${channel.settings.mode})\n`;
+        // Безопасная проверка расписания
+        const schedule = channel.settings?.schedule || {};
+        const scheduleStatus = schedule.enabled ?
+          ` (⏰ ${(schedule.times || []).length})` : '';
+        message += `• ${channel.title} (${channel.settings?.mode || 'combined'})${scheduleStatus}\n`;
       });
     }
 

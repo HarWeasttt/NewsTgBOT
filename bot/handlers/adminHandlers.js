@@ -23,7 +23,7 @@ function setupAdminHandlers(bot) {
 
       const today = new Date();
       today.setHours(0, 0, 0, 0);
-      
+
       const usersWithPosts = await User.countDocuments({
         'limits.lastReset': { $gte: today },
         'limits.postsToday': { $gt: 0 }
@@ -54,15 +54,251 @@ function setupAdminHandlers(bot) {
       await ctx.reply('❌ Ошибка при получении статистики');
     }
   });
+  // Админское удаление канала
+  bot.action(/admin_delete_channel_(.+)/, async (ctx) => {
+    if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
+      await ctx.answerCbQuery('❌ Доступ запрещен');
+      return;
+    }
 
+    const channelId = ctx.match[1];
+    const channel = await Channel.findById(channelId).populate('owner');
+
+    if (!channel) {
+      await ctx.answerCbQuery('❌ Канал не найден');
+      return;
+    }
+
+    const message = `🗑️ Админское удаление канала\n\n` +
+      `Канал: ${channel.title}\n` +
+      `Владелец: ${channel.owner.firstName}${channel.owner.username ? ` (@${channel.owner.username})` : ''}\n` +
+      `RSS источников: ${channel.rssSources.length}\n` +
+      `Постов: ${channel.statistics?.totalPosts || 0}\n\n` +
+      `⚠️ Это действие нельзя отменить!\n` +
+      `Вы уверены, что хотите удалить канал?`;
+
+    await ctx.editMessageText(message, {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            {
+              text: '✅ Да, удалить',
+              callback_data: `admin_confirm_delete_channel_${channel._id}`
+            },
+            {
+              text: '❌ Отмена',
+              callback_data: 'admin_back_to_panel'
+            }
+          ]
+        ]
+      }
+    });
+  });
+  bot.hears('📊 Каналы', async (ctx) => {
+    if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) return;
+
+    try {
+      const channels = await Channel.find()
+        .populate('owner', 'firstName username')
+        .sort({ createdAt: -1 })
+        .limit(20);
+
+      if (channels.length === 0) {
+        await ctx.reply('❌ В системе нет каналов.');
+        return;
+      }
+
+      let message = '📊 Управление каналами (последние 20):\n\n';
+      const keyboard = [];
+
+      channels.forEach((channel, index) => {
+        message += `${index + 1}. ${channel.title}\n`;
+        message += `   Владелец: ${channel.owner.firstName}${channel.owner.username ? ` (@${channel.owner.username})` : ''}\n`;
+        message += `   RSS: ${channel.rssSources.length} | Постов: ${channel.statistics?.totalPosts || 0}\n`;
+        message += `   Создан: ${channel.createdAt.toLocaleDateString('ru-RU')}\n\n`;
+
+        keyboard.push([
+          {
+            text: `👁️ ${channel.title.substring(0, 15)}`,
+            callback_data: `admin_view_channel_${channel._id}`
+          },
+          {
+            text: '🗑️',
+            callback_data: `admin_delete_channel_${channel._id}`
+          }
+        ]);
+      });
+
+      keyboard.push([{ text: '🔙 В админ-панель', callback_data: 'admin_back_to_panel' }]);
+
+      await ctx.reply(message, {
+        reply_markup: { inline_keyboard: keyboard }
+      });
+
+    } catch (error) {
+      console.error('Admin manage channels error:', error);
+      await ctx.reply('❌ Ошибка при получении каналов');
+    }
+  });
+  // Подтверждение админского удаления
+  bot.action(/admin_confirm_delete_channel_(.+)/, async (ctx) => {
+    if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
+      await ctx.answerCbQuery('❌ Доступ запрещен');
+      return;
+    }
+
+    const channelId = ctx.match[1];
+
+    try {
+      const channel = await Channel.findById(channelId).populate('owner');
+
+      if (!channel) {
+        await ctx.answerCbQuery('❌ Канал не найден');
+        return;
+      }
+
+      const channelInfo = {
+        title: channel.title,
+        owner: `${channel.owner.firstName}${channel.owner.username ? ` (@${channel.owner.username})` : ''}`,
+        rssCount: channel.rssSources.length,
+        postsCount: channel.statistics?.totalPosts || 0
+      };
+
+      // Удаляем канал
+      await Channel.findByIdAndDelete(channelId);
+
+      await ctx.answerCbQuery('✅ Канал удален');
+
+      const message = `✅ Канал успешно удален администратором!\n\n` +
+        `📊 Информация:\n` +
+        `• Канал: ${channelInfo.title}\n` +
+        `• Владелец: ${channelInfo.owner}\n` +
+        `• RSS источников: ${channelInfo.rssCount}\n` +
+        `• Постов всего: ${channelInfo.postsCount}\n\n` +
+        `🗑️ Канал полностью удален из системы.`;
+
+      await ctx.editMessageText(message, {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🔙 В админ-панель', callback_data: 'admin_back_to_panel' }]
+          ]
+        }
+      });
+
+    } catch (error) {
+      console.error('Admin delete channel error:', error);
+      await ctx.answerCbQuery('❌ Ошибка при удалении канала');
+      await ctx.editMessageText('❌ Произошла ошибка при удалении канала.');
+    }
+  });
+
+  // Поиск каналов для админского удаления
+  bot.action('admin_manage_channels', async (ctx) => {
+    if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
+      await ctx.answerCbQuery('❌ Доступ запрещен');
+      return;
+    }
+
+    try {
+      const channels = await Channel.find()
+        .populate('owner', 'firstName username')
+        .sort({ createdAt: -1 })
+        .limit(20);
+
+      if (channels.length === 0) {
+        await ctx.editMessageText('❌ В системе нет каналов.');
+        return;
+      }
+
+      let message = '📊 Управление каналами (последние 20):\n\n';
+      const keyboard = [];
+
+      channels.forEach((channel, index) => {
+        message += `${index + 1}. ${channel.title}\n`;
+        message += `   Владелец: ${channel.owner.firstName}${channel.owner.username ? ` (@${channel.owner.username})` : ''}\n`;
+        message += `   RSS: ${channel.rssSources.length} | Постов: ${channel.statistics?.totalPosts || 0}\n`;
+        message += `   Создан: ${channel.createdAt.toLocaleDateString('ru-RU')}\n\n`;
+
+        keyboard.push([
+          {
+            text: `👁️ ${channel.title.substring(0, 15)}`,
+            callback_data: `admin_view_channel_${channel._id}`
+          },
+          {
+            text: '🗑️',
+            callback_data: `admin_delete_channel_${channel._id}`
+          }
+        ]);
+      });
+
+      keyboard.push([{ text: '🔙 В админ-панель', callback_data: 'admin_back_to_panel' }]);
+
+      await ctx.editMessageText(message, {
+        reply_markup: { inline_keyboard: keyboard }
+      });
+
+    } catch (error) {
+      console.error('Admin manage channels error:', error);
+      await ctx.answerCbQuery('❌ Ошибка при получении каналов');
+    }
+  });
+
+  // Просмотр информации о канале для админа
+  bot.action(/admin_view_channel_(.+)/, async (ctx) => {
+    if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) {
+      await ctx.answerCbQuery('❌ Доступ запрещен');
+      return;
+    }
+
+    const channelId = ctx.match[1];
+    const channel = await Channel.findById(channelId).populate('owner');
+
+    if (!channel) {
+      await ctx.answerCbQuery('❌ Канал не найден');
+      return;
+    }
+
+    const message = `📊 Информация о канале:\n\n` +
+      `🔸 Название: ${channel.title}\n` +
+      `👤 Владелец: ${channel.owner.firstName}${channel.owner.username ? ` (@${channel.owner.username})` : ''}\n` +
+      `🆔 ID владельца: ${channel.owner.telegramId}\n` +
+      `🔧 Режим: ${channel.settings.mode}\n` +
+      `📰 RSS источников: ${channel.rssSources.length}\n` +
+      `🚀 Автопостинг: ${channel.settings.autoPublish ? '✅' : '❌'}\n` +
+      `📈 Постов всего: ${channel.statistics?.totalPosts || 0}\n` +
+      `📅 Создан: ${channel.createdAt.toLocaleDateString('ru-RU')}\n\n` +
+      `RSS источники:\n`;
+
+    if (channel.rssSources.length === 0) {
+      message += '❌ Нет RSS источников\n';
+    } else {
+      channel.rssSources.forEach((source, index) => {
+        message += `${index + 1}. ${source.url}\n`;
+      });
+    }
+
+    await ctx.editMessageText(message, {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '🗑️ Удалить канал', callback_data: `admin_delete_channel_${channel._id}` },
+            { text: '👥 К каналам', callback_data: 'admin_manage_channels' }
+          ],
+          [
+            { text: '🔙 В админ-панель', callback_data: 'admin_back_to_panel' }
+          ]
+        ]
+      }
+    });
+  });
   bot.hears('👥 Пользователи', async (ctx) => {
     if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) return;
 
     try {
       const users = await User.find().sort({ createdAt: -1 }).limit(10);
-      
+
       let message = '👥 Последние 10 пользователей:\n\n';
-      
+
       users.forEach((user, index) => {
         message += `${index + 1}. ${user.firstName}${user.lastName ? ' ' + user.lastName : ''}\n`;
         message += `   👤 ${user.username ? `@${user.username}` : 'без username'}\n`;
@@ -94,10 +330,10 @@ function setupAdminHandlers(bot) {
     try {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
-      
+
       const weekAgo = new Date(today);
       weekAgo.setDate(weekAgo.getDate() - 7);
-      
+
       const monthAgo = new Date(today);
       monthAgo.setDate(monthAgo.getDate() - 30);
 
@@ -169,10 +405,12 @@ function setupAdminHandlers(bot) {
             active: {
               $sum: {
                 $cond: [
-                  { $and: [
-                    { $ne: ['$subscription.plan', 'FREE'] },
-                    { $gt: ['$subscription.endDate', new Date()] }
-                  ]},
+                  {
+                    $and: [
+                      { $ne: ['$subscription.plan', 'FREE'] },
+                      { $gt: ['$subscription.endDate', new Date()] }
+                    ]
+                  },
                   1,
                   0
                 ]
@@ -188,10 +426,10 @@ function setupAdminHandlers(bot) {
       });
 
       let message = '💎 Текущие тарифные планы:\n\n';
-      
+
       Object.entries(SUBSCRIPTION_PLANS).forEach(([key, plan]) => {
         const stats = planStatsMap[key] || { count: 0, active: 0 };
-        
+
         message += `🔸 *${plan.name}*\n`;
         message += `   📺 Каналов: ${plan.channels}\n`;
         message += `   📝 Постов/день: ${plan.postsPerDay}\n`;
@@ -267,7 +505,7 @@ function setupAdminHandlers(bot) {
     try {
       const memoryUsage = process.memoryUsage();
       const uptime = process.uptime();
-      
+
       const hours = Math.floor(uptime / 3600);
       const minutes = Math.floor((uptime % 3600) / 60);
       const seconds = Math.floor(uptime % 60);

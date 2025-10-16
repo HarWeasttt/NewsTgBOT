@@ -19,11 +19,12 @@ class Application {
   constructor() {
     // Создаем экземпляр бота с токеном из конфигурации
     this.bot = new Telegraf(BOT_CONFIG.TOKEN);
-    
+
     // Инициализируем все компоненты приложения
     this.setupDatabase();    // Подключение к MongoDB
     this.setupBot();         // Настройка бота и обработчиков
     this.setupCronJobs();    // Запуск фоновых задач
+    this.startAutoPosting();
   }
 
   /**
@@ -35,10 +36,76 @@ class Application {
       // Устанавливаем соединение с MongoDB
       await mongoose.connect(BOT_CONFIG.MONGODB_URI);
       console.log('✅ MongoDB подключена');
+
+      // Запускаем миграцию после подключения к БД
+      await this.migrateExistingChannels();
     } catch (error) {
       console.error('❌ Ошибка подключения к MongoDB:', error);
       process.exit(1); // Завершаем процесс при ошибке подключения к БД
     }
+  }
+
+  /**
+   * Миграция существующих каналов - добавляем поле schedule если его нет
+   */
+  async migrateExistingChannels() {
+    try {
+      const Channel = require('./models/Channel');
+      const channels = await Channel.find({});
+      let updatedCount = 0;
+
+      for (const channel of channels) {
+        let needsUpdate = false;
+
+        // Проверяем и инициализируем schedule
+        if (!channel.schedule || typeof channel.schedule.enabled === 'undefined') {
+          channel.schedule = {
+            enabled: false,
+            times: []
+          };
+          needsUpdate = true;
+        }
+
+        // Проверяем и инициализируем другие поля если нужно
+        if (!channel.settings) {
+          channel.settings = {
+            mode: 'combined',
+            autoPublish: true
+          };
+          needsUpdate = true;
+        }
+
+        if (!channel.aiSettings) {
+          channel.aiSettings = {
+            tone: 'professional',
+            topics: []
+          };
+          needsUpdate = true;
+        }
+
+        if (needsUpdate) {
+          await channel.save();
+          updatedCount++;
+          console.log(`✅ Updated channel: ${channel.title}`);
+        }
+      }
+
+      if (updatedCount > 0) {
+        console.log(`🎉 Migration completed: ${updatedCount} channels updated`);
+      } else {
+        console.log('✅ All channels are already up to date');
+      }
+    } catch (error) {
+      console.error('❌ Migration error:', error);
+    }
+  }
+
+  /**
+   * Запуск сервиса автопостинга
+   */
+  startAutoPosting() {
+    const AutoPostService = require('./services/AutoPostService');
+    AutoPostService.start();
   }
 
   /**
@@ -60,10 +127,10 @@ class Application {
 
     // ========== MIDDLEWARE СТЕК ==========
     // Middleware выполняются ПОСЛЕДОВАТЕЛЬНО для каждого входящего сообщения
-    
+
     // 1. Сессии - хранение состояния между сообщениями
     this.bot.use(session());
-    
+
     // 2. Сцены - управление многошаговыми диалогами
     this.bot.use(stage.middleware());
 
@@ -89,10 +156,10 @@ class Application {
       if (ctx.from) {
         try {
           const UserService = require('./services/UserService');
-          
+
           // Получаем или создаем пользователя в БД
           ctx.user = await UserService.getOrCreateUser(ctx.from);
-          
+
           // Проверяем права администратора
           ctx.isAdmin = BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id);
 
@@ -109,10 +176,10 @@ class Application {
 
     // ========== РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ ==========
     // Важен порядок: команды -> текстовые обработчики
-    
+
     // 1. Команды (высший приоритет) - /start, /admin, /help
     this.setupCommands();
-    
+
     // 2. Текстовые обработчики (низший приоритет) - кнопки меню, сообщения
     this.setupHandlers();
 
@@ -212,27 +279,26 @@ class Application {
     const setupUserHandlers = require('./bot/handlers/userHandlers');
     const setupChannelHandlers = require('./bot/handlers/channelHandlers');
 
-
     const setupAllHandlers = async () => {
-        try {
-            console.log('🔄 Подключение adminHandlers...');
-            await setupAdminHandlers(this.bot);
-            console.log('🔄 Подключение userHandlers...');
-            await setupUserHandlers(this.bot);
+      try {
+        console.log('🔄 Подключение adminHandlers...');
+        await setupAdminHandlers(this.bot);
+        console.log('🔄 Подключение userHandlers...');
+        await setupUserHandlers(this.bot);
 
-            console.log('🔄 Подключение callbackHandlers...');
-            await setupCallbackHandlers(this.bot);
+        console.log('🔄 Подключение channelHandlers...');
+        await setupChannelHandlers(this.bot);
+        console.log('🔄 Подключение callbackHandlers...');
+        await setupCallbackHandlers(this.bot);
 
-            console.log('🔄 Подключение channelHandlers...');
-            await setupChannelHandlers(this.bot);
-            console.log('✅ Все обработчики подключены');
-        } catch (error) {
-            console.error('❌ Ошибка при подключении обработчиков:', error);
-        }
+        console.log('✅ Все обработчики подключены');
+      } catch (error) {
+        console.error('❌ Ошибка при подключении обработчиков:', error);
+      }
     };
 
     setupAllHandlers();
-}
+  }
 
   /**
    * Настройка фоновых задач (cron jobs)

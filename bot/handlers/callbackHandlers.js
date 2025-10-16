@@ -6,7 +6,11 @@ const UserService = require('../../services/UserService');
 const AIService = require('../../services/AIService');
 const ConfigService = require('../../services/ConfigService');
 const BotManager = require('../../services/BotManager');
-const { userMainKeyboard } = require('../keyboards/keyboards');
+const { rssSetupScene, quickRssSetupScene } = require('../scenes/rssSetupScene');
+const { userMainKeyboard, channelDetailKeyboard,
+  deleteConfirmKeyboard,
+  rssManagementKeyboard,
+  rssDeleteSelectionKeyboard } = require('../keyboards/keyboards');
 const { BOT_CONFIG, SUBSCRIPTION_PLANS, loadCustomPlans } = require('../../config');
 const { createObjectCsvWriter } = require('csv-writer');
 const fs = require('fs');
@@ -1343,36 +1347,40 @@ function setupCallbackHandlers(bot) {
   });
 
   // Управление каналами
-  bot.action('manage_channels', async (ctx) => {
-    const channels = await Channel.find({ owner: ctx.user._id });
+bot.action('manage_channels', async (ctx) => {
+  const channels = await Channel.find({ owner: ctx.user._id });
 
-    if (channels.length === 0) {
-      await ctx.editMessageText('❌ У вас нет подключенных каналов.');
-      return;
-    }
+  let message = '⚙️ Управление каналами:\n\n';
+  const keyboard = [];
 
-    let message = '⚙️ Управление каналами:\n\n';
-    const keyboard = [];
+  channels.forEach(channel => {
+    // Безопасная проверка всех полей
+    const hasSchedule = channel.schedule && typeof channel.schedule.enabled !== 'undefined';
+    const scheduleStatus = hasSchedule && channel.schedule.enabled ? 
+      `⏰ ${(channel.schedule.times || []).length} раз в день` : '❌ Выкл';
 
-    channels.forEach(channel => {
-      message += `🔸 ${channel.title}\n`;
-      message += `Режим: ${channel.settings.mode}\n`;
-      message += `RSS: ${channel.rssSources.length} источников\n\n`;
+    const mode = channel.settings?.mode || 'combined';
+    const rssCount = channel.rssSources?.length || 0;
 
-      keyboard.push([
-        {
-          text: `⚙️ ${channel.title.substring(0, 20)}`,
-          callback_data: `channel_detail_${channel._id}`
-        }
-      ]);
-    });
+    message += `🔸 ${channel.title}\n`;
+    message += `Режим: ${mode}\n`;
+    message += `RSS: ${rssCount} источников\n`;
+    message += `Расписание: ${scheduleStatus}\n\n`;
 
-    keyboard.push([{ text: '🔙 Назад', callback_data: 'main_menu' }]);
-
-    await ctx.editMessageText(message, {
-      reply_markup: { inline_keyboard: keyboard }
-    });
+    keyboard.push([
+      {
+        text: `⚙️ ${channel.title.substring(0, 20)}`,
+        callback_data: `channel_detail_${channel._id}`
+      }
+    ]);
   });
+
+  keyboard.push([{ text: '🔙 Назад', callback_data: 'main_menu' }]);
+
+  await ctx.editMessageText(message, {
+    reply_markup: { inline_keyboard: keyboard }
+  });
+});
 
   // Детальная информация о канале
   bot.action(/channel_detail_(.+)/, async (ctx) => {
@@ -1393,25 +1401,12 @@ function setupCallbackHandlers(bot) {
       `🔧 Режим: ${channel.settings.mode}\n` +
       `📰 RSS источников: ${channel.rssSources.length}\n` +
       `🤖 AI стиль: ${channel.aiSettings.tone}\n` +
-      `🚀 Автопостинг: ${channel.settings.autoPublish ? '✅' : '❌'}\n\n` +
+      `🚀 Автопостинг: ${channel.settings.autoPublish ? '✅' : '❌'}\n` +
+      `📈 Постов всего: ${channel.statistics?.totalPosts || 0}\n\n` +
       `Выберите действие:`;
 
     await ctx.editMessageText(message, {
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: '📰 RSS', callback_data: `manage_rss_${channel._id}` },
-            { text: '🤖 AI', callback_data: `ai_settings_${channel._id}` }
-          ],
-          [
-            { text: '🚀 Создать пост', callback_data: `ai_generate_${channel._id}` },
-            { text: '⚙️ Настройки', callback_data: `channel_settings_${channel._id}` }
-          ],
-          [
-            { text: '🔙 Назад', callback_data: 'manage_channels' }
-          ]
-        ]
-      }
+      reply_markup: channelDetailKeyboard(channelId)
     });
   });
 
@@ -1422,23 +1417,38 @@ function setupCallbackHandlers(bot) {
 
     const message = `⚙️ Настройки канала: ${channel.title}\n\n` +
       `Текущий режим: ${channel.settings.mode}\n` +
-      `Выберите новый режим работы:`;
+      `Автопостинг: ${channel.settings.autoPublish ? '✅ Включен' : '❌ Выключен'}\n` +
+      `Расписание: ${channel.settings.schedule.enabled ? '✅ Включено' : '❌ Выключено'}\n\n` +
+      `Выберите раздел для настройки:`;
 
     await ctx.editMessageText(message, {
       reply_markup: {
         inline_keyboard: [
           [
-            { text: '📰 Только RSS', callback_data: `set_mode_${channel._id}_rss` },
-            { text: '🤖 Только AI', callback_data: `set_mode_${channel._id}_ai` }
+            {
+              text: '🚀 Автопостинг',
+              callback_data: `autopost_settings_${channel._id}`
+            },
+            {
+              text: '🔧 Режим работы',
+              callback_data: `mode_settings_${channel._id}`
+            }
           ],
           [
-            { text: '🔀 Комбинированный', callback_data: `set_mode_${channel._id}_combined` }
+            {
+              text: '📰 RSS источники',
+              callback_data: `manage_rss_${channel._id}`
+            },
+            {
+              text: '🤖 AI настройки',
+              callback_data: `ai_settings_${channel._id}`
+            }
           ],
           [
-            { text: '🔄 Автопостинг', callback_data: `toggle_autopost_${channel._id}` }
-          ],
-          [
-            { text: '🔙 Назад', callback_data: `channel_detail_${channel._id}` }
+            {
+              text: '🔙 Назад',
+              callback_data: `channel_detail_${channel._id}`
+            }
           ]
         ]
       }
@@ -1501,20 +1511,107 @@ function setupCallbackHandlers(bot) {
     message += 'Выберите действие:';
 
     await ctx.editMessageText(message, {
+      reply_markup: rssManagementKeyboard(channelId, channel.rssSources.length > 0)
+    });
+  });
+  // Удаление канала - подтверждение
+  bot.action(/delete_channel_(.+)/, async (ctx) => {
+    const channelId = ctx.match[1];
+    const channel = await Channel.findById(channelId);
+
+    if (!channel) {
+      await ctx.answerCbQuery('❌ Канал не найден');
+      return;
+    }
+
+    const message = `🗑️ Удаление канала: ${channel.title}\n\n` +
+      `⚠️ Внимание! Это действие нельзя отменить.\n` +
+      `Будет удалено:\n` +
+      `• Настройки канала\n` +
+      `• RSS источники: ${channel.rssSources.length}\n` +
+      `• Статистика\n\n` +
+      `Вы уверены, что хотите удалить канал?`;
+
+    await ctx.editMessageText(message, {
+      reply_markup: deleteConfirmKeyboard(channelId)
+    });
+  });
+
+  // Подтверждение удаления канала
+  bot.action(/confirm_delete_channel_(.+)/, async (ctx) => {
+    const channelId = ctx.match[1];
+
+    try {
+      const channel = await Channel.findById(channelId);
+
+      if (!channel) {
+        await ctx.answerCbQuery('❌ Канал не найден');
+        return;
+      }
+
+      if (channel.owner.toString() !== ctx.user._id.toString()) {
+        await ctx.answerCbQuery('❌ Доступ запрещен');
+        return;
+      }
+
+      const channelTitle = channel.title;
+
+      // Удаляем канал из базы данных
+      await Channel.findByIdAndDelete(channelId);
+
+      await ctx.answerCbQuery('✅ Канал удален');
+      await ctx.editMessageText(`✅ Канал "${channelTitle}" успешно удален!`, {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '📊 К моим каналам', callback_data: 'manage_channels' }],
+            [{ text: '🔙 В главное меню', callback_data: 'main_menu' }]
+          ]
+        }
+      });
+
+    } catch (error) {
+      console.error('Delete channel error:', error);
+      await ctx.answerCbQuery('❌ Ошибка при удалении канала');
+      await ctx.editMessageText('❌ Произошла ошибка при удалении канала. Попробуйте позже.');
+    }
+  });
+  // Запуск сцены добавления RSS
+  bot.action(/rss_setup_(.+)/, async (ctx) => {
+    const channelId = ctx.match[1];
+
+    await ctx.editMessageText('📥 Выберите тип добавления RSS:', {
       reply_markup: {
         inline_keyboard: [
-          [{ text: '➕ Добавить RSS', callback_data: `rss_setup_${channel._id}` }],
-          channel.rssSources.length > 0 ?
-            [{ text: '🗑️ Удалить RSS', callback_data: `delete_rss_${channel._id}` }] :
-            [],
-          [{ text: '🔙 Назад', callback_data: `channel_detail_${channel._id}` }]
+          [
+            {
+              text: '⚡ Быстрое добавление',
+              callback_data: `quick_rss_setup_${channelId}`
+            },
+            {
+              text: '🎯 С настройкой фильтров',
+              callback_data: `full_rss_setup_${channelId}`
+            }
+          ],
+          [
+            {
+              text: '🔙 Назад',
+              callback_data: `manage_rss_${channelId}`
+            }
+          ]
         ]
       }
     });
   });
 
-  // Запуск сцены добавления RSS
-  bot.action(/rss_setup_(.+)/, async (ctx) => {
+  // Быстрое добавление
+  bot.action(/quick_rss_setup_(.+)/, async (ctx) => {
+    const channelId = ctx.match[1];
+    await ctx.scene.enter('quick-rss-setup-scene', { channelId });
+    await ctx.answerCbQuery();
+  });
+
+  // Полное добавление с фильтрами
+  bot.action(/full_rss_setup_(.+)/, async (ctx) => {
     const channelId = ctx.match[1];
     await ctx.scene.enter('rss-setup-scene', { channelId });
     await ctx.answerCbQuery();
@@ -1621,8 +1718,72 @@ function setupCallbackHandlers(bot) {
 
   // Удаление RSS (заглушка)
   bot.action(/delete_rss_(.+)/, async (ctx) => {
-    await ctx.answerCbQuery('🗑️ Удаление RSS будет доступно в следующем обновлении');
+    const channelId = ctx.match[1];
+    const channel = await Channel.findById(channelId);
+
+    if (!channel) {
+      await ctx.answerCbQuery('❌ Канал не найден');
+      return;
+    }
+
+    if (channel.rssSources.length === 0) {
+      await ctx.answerCbQuery('❌ Нет RSS источников для удаления');
+      return;
+    }
+
+    const message = `🗑️ Удаление RSS источника\n\n` +
+      `Выберите RSS источник для удаления:`;
+
+    await ctx.editMessageText(message, {
+      reply_markup: rssDeleteSelectionKeyboard(channel, channelId)
+    });
   });
+
+  // Подтверждение удаления RSS источника
+  bot.action(/confirm_delete_rss_(.+)_(\d+)/, async (ctx) => {
+    const channelId = ctx.match[1];
+    const rssIndex = parseInt(ctx.match[2]);
+
+    try {
+      const channel = await Channel.findById(channelId);
+
+      if (!channel) {
+        await ctx.answerCbQuery('❌ Канал не найден');
+        return;
+      }
+
+      if (rssIndex >= channel.rssSources.length) {
+        await ctx.answerCbQuery('❌ RSS источник не найден');
+        return;
+      }
+
+      const deletedRss = channel.rssSources[rssIndex];
+
+      // Удаляем RSS источник из массива
+      channel.rssSources.splice(rssIndex, 1);
+      await channel.save();
+
+      await ctx.answerCbQuery('✅ RSS источник удален');
+
+      const message = `✅ RSS источник успешно удален!\n\n` +
+        `URL: ${deletedRss.url}\n` +
+        `Канал: ${channel.title}`;
+
+      await ctx.editMessageText(message, {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '📰 К RSS источникам', callback_data: `manage_rss_${channel._id}` }],
+            [{ text: '🔙 К каналу', callback_data: `channel_detail_${channel._id}` }]
+          ]
+        }
+      });
+
+    } catch (error) {
+      console.error('Delete RSS error:', error);
+      await ctx.answerCbQuery('❌ Ошибка при удалении RSS источника');
+    }
+  });
+
 
   // ==================== ОБРАБОТКА ТЕКСТОВОГО ПОИСКА ПОЛЬЗОВАТЕЛЕЙ ====================
 
