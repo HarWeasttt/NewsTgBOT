@@ -105,7 +105,30 @@ class Application {
    */
   startAutoPosting() {
     const AutoPostService = require('./services/AutoPostService');
+    const RssService = require('./services/RSSService');
+    
+    // ПЕРЕДАЕМ БОТ В СЕРВИСЫ ПЕРЕД ЗАПУСКОМ
+    console.log('🔧 Setting bot instances in services...');
+    
+    // Передаем бот в AutoPostService
+    if (AutoPostService.setBot) {
+      AutoPostService.setBot(this.bot);
+      console.log('✅ Bot set in AutoPostService');
+    } else {
+      console.log('❌ AutoPostService.setBot method not found');
+    }
+    
+    // Передаем бот в RSSService
+    if (RssService.setBot) {
+      RssService.setBot(this.bot);
+      console.log('✅ Bot set in RSSService');
+    } else {
+      console.log('❌ RSSService.setBot method not found');
+    }
+    
+    // Запускаем автопостинг
     AutoPostService.start();
+    console.log('🚀 AutoPostService started');
   }
 
   /**

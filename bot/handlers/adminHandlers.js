@@ -499,6 +499,365 @@ function setupAdminHandlers(bot) {
     }
   });
 
+
+
+// Обработчик кнопки "Тарифы" для пользователей
+bot.hears('💎 Тарифы', async (ctx) => {
+    let message = `💎 Доступные тарифы:\n\n`;
+
+    Object.entries(SUBSCRIPTION_PLANS).forEach(([key, plan]) => {
+        // ПОКАЗЫВАЕМ ВСЕ ТАРИФЫ, КРОМЕ FREE ЕСЛИ НЕ ПРОБНЫЙ ПЕРИОД
+        if (key !== 'FREE' || ctx.user.subscription.isTrial) {
+            message += `🔸 *${plan.name}*\n`;
+            message += `   📺 Каналов: ${plan.channels}\n`;
+            message += `   📝 Постов/день: ${plan.postsPerDay}\n`;
+            message += `   🤖 AI: ${plan.aiAccess ? '✅' : '❌'}\n`;
+            message += `   ⏰ Планировщик: ${plan.scheduling ? '✅' : '❌'}\n`;
+            message += `   💰 Цена: ${plan.price > 0 ? `${plan.price} ⭐/месяц` : 'Бесплатно'}\n\n`;
+        }
+    });
+
+    if (ctx.user.subscription.isTrial) {
+        message += `🎁 У вас активен пробный период до ${new Date(ctx.user.subscription.trialEndDate).toLocaleDateString('ru-RU')}\n\n`;
+    }
+
+    message += `Выберите тариф для покупки:`;
+
+    // СОЗДАЕМ КНОПКИ ТОЛЬКО ДЛЯ ПЛАТНЫХ ТАРИФОВ
+    const paidPlans = Object.entries(SUBSCRIPTION_PLANS)
+        .filter(([key, plan]) => key !== 'FREE' && plan.price > 0);
+
+    const keyboard = [
+        ...paidPlans.map(([key, plan]) => [
+            { 
+                text: `${'⭐'.repeat(Math.min(plan.price / 100, 3))} ${plan.name}`, 
+                callback_data: `user_select_plan_${key}`
+            }
+        ]),
+        [
+            { text: '💰 Как получить звезды', callback_data: 'how_to_get_stars' },
+            { text: '📊 Моя подписка', callback_data: 'my_subscription' }
+        ]
+    ];
+
+    await ctx.reply(message, {
+        parse_mode: 'Markdown',
+        reply_markup: {
+            inline_keyboard: keyboard
+        }
+    });
+});
+
+// Выбор тарифа пользователем
+bot.action(/user_select_plan_(.+)/, async (ctx) => {
+    const planName = ctx.match[1];
+    const plan = SUBSCRIPTION_PLANS[planName];
+
+    console.log('🔍 Выбор тарифа:', { planName, plan }); // ДЛЯ ОТЛАДКИ
+
+    // ИСПРАВЛЕННОЕ УСЛОВИЕ ПРОВЕРКИ
+    if (!plan) {
+        console.log('❌ Тариф не найден:', planName);
+        await ctx.answerCbQuery('❌ Тариф не найден');
+        return;
+    }
+
+    if (plan.price <= 0) {
+        console.log('❌ Тариф бесплатный:', planName);
+        await ctx.answerCbQuery('❌ Этот тариф бесплатный');
+        return;
+    }
+
+    // Периоды подписки (месяцы) и коэффициенты скидки
+    const subscriptionPeriods = [
+        { months: 1, discount: 0, label: '1 месяц', price: plan.price },
+        { months: 3, discount: 10, label: '3 месяца', price: Math.floor(plan.price * 3 * 0.9) },
+        { months: 6, discount: 20, label: '6 месяцев', price: Math.floor(plan.price * 6 * 0.8) },
+        { months: 12, discount: 30, label: '1 год', price: Math.floor(plan.price * 12 * 0.7) }
+    ];
+
+    let message = `🛒 *Выбор тарифа: ${plan.name}*\n\n`;
+    message += `*Включено:*\n`;
+    message += `• ${plan.channels} каналов\n`;
+    message += `• ${plan.postsPerDay} постов в день\n`;
+    message += `• AI-генерация: ${plan.aiAccess ? '✅' : '❌'}\n`;
+    message += `• Планировщик: ${plan.scheduling ? '✅' : '❌'}\n\n`;
+    message += `*Выберите период подписки:*\n\n`;
+
+    subscriptionPeriods.forEach(period => {
+        const savings = period.discount > 0 ? ` (экономия ${period.discount}%)` : '';
+        const originalPrice = plan.price * period.months;
+        const discountInfo = period.discount > 0 ? `\n   Было: ${originalPrice} ⭐` : '';
+        message += `🔸 ${period.label}: ${period.price} ⭐${savings}${discountInfo}\n`;
+    });
+
+    await ctx.editMessageText(message, {
+        parse_mode: 'Markdown',
+        reply_markup: {
+            inline_keyboard: [
+                ...subscriptionPeriods.map(period => [
+                    {
+                        text: `${period.label} - ${period.price} ⭐${period.discount > 0 ? ` 🎁` : ''}`,
+                        callback_data: `user_buy_plan_${planName}_${period.months}`
+                    }
+                ]),
+                [
+                    { text: '🔙 Назад к тарифам', callback_data: 'back_to_tariffs' },
+                    { text: '💰 Получить звезды', callback_data: 'how_to_get_stars' }
+                ]
+            ]
+        }
+    });
+
+    await ctx.answerCbQuery();
+});
+
+// Покупка тарифа с выбранным периодом
+bot.action(/user_buy_plan_(.+)_(\d+)/, async (ctx) => {
+    const planName = ctx.match[1];
+    const months = parseInt(ctx.match[2]);
+    const plan = SUBSCRIPTION_PLANS[planName];
+
+    console.log('💰 Покупка тарифа:', { planName, months, plan });
+
+    // ПРОВЕРЯЕМ ЧТО ТАРИФ СУЩЕСТВУЕТ И ПЛАТНЫЙ
+    if (!plan || plan.price <= 0) {
+        await ctx.answerCbQuery('❌ Ошибка: тариф не найден');
+        return;
+    }
+
+    // Находим выбранный период
+    const subscriptionPeriods = [
+        { months: 1, discount: 0, price: plan.price },
+        { months: 3, discount: 10, price: Math.floor(plan.price * 3 * 0.9) },
+        { months: 6, discount: 20, price: Math.floor(plan.price * 6 * 0.8) },
+        { months: 12, discount: 30, price: Math.floor(plan.price * 12 * 0.7) }
+    ];
+
+    const selectedPeriod = subscriptionPeriods.find(p => p.months === months);
+    if (!selectedPeriod) {
+        await ctx.answerCbQuery('❌ Ошибка: период не найден');
+        return;
+    }
+
+    const totalPrice = selectedPeriod.price;
+
+    // Создаем инвойс для оплаты звездами
+    const payload = JSON.stringify({
+        plan: planName,
+        months: months,
+        userId: ctx.user._id.toString(),
+        timestamp: Date.now()
+    });
+
+    try {
+        // ДЛЯ TELEGRAM STARS - правильный формат
+        const prices = [{
+            label: `Подписка ${plan.name}`,
+            amount: totalPrice * 100 // Для Stars нужно умножать на 100!
+        }];
+
+        // Для Stars используем специальные настройки чаевых
+        const maxTipAmount = totalPrice * 100; // Максимальные чаевые (в формате Stars)
+        
+        // Предлагаемые суммы чаевых (в звездах)
+        const suggestedTips = [100, 200, 500]; // 1, 2, 5 звезд в правильном формате
+
+        await ctx.replyWithInvoice({
+            title: `Тариф "${plan.name}" - ${months} ${getMonthWord(months)}`,
+            description: `Подписка на ${months} ${getMonthWord(months)}\n\nВключено:\n• ${plan.channels} каналов\n• ${plan.postsPerDay} постов в день\n• AI-генерация: ${plan.aiAccess ? 'Да' : 'Нет'}\n• Планировщик: ${plan.scheduling ? 'Да' : 'Нет'}\n${selectedPeriod.discount > 0 ? `• Скидка: ${selectedPeriod.discount}%` : ''}\n\n💫 Оплата Telegram Stars`,
+            payload: payload,
+            currency: 'XTR', // Telegram Stars
+            prices: prices,
+            provider_token: '', // Для Stars может быть пустым
+            photo_url: 'https://via.placeholder.com/500x300/4F46E5/FFFFFF?text=Content+Manager+Bot',
+            need_name: false,
+            need_phone_number: false,
+            need_email: false,
+            need_shipping_address: false,
+            is_flexible: false,
+            suggested_tip_amounts: suggestedTips // Предлагаемые чаевые
+        });
+
+        await ctx.answerCbQuery();
+    } catch (error) {
+        console.error('❌ Ошибка создания инвойса:', error);
+        
+        // ПРОБУЕМ АЛЬТЕРНАТИВНЫЙ ВАРИАНТ БЕЗ ЧАЕВЫХ
+        try {
+            await ctx.replyWithInvoice({
+                title: `Тариф "${plan.name}" - ${months} ${getMonthWord(months)}`,
+                description: `Подписка на ${months} ${getMonthWord(months)}\n\nВключено:\n• ${plan.channels} каналов\n• ${plan.postsPerDay} постов в день\n• AI-генерация: ${plan.aiAccess ? 'Да' : 'Нет'}\n• Планировщик: ${plan.scheduling ? 'Да' : 'Нет'}`,
+                payload: payload,
+                currency: 'XTR',
+                prices: [{
+                    label: `Подписка ${plan.name}`,
+                    amount: 1
+                }],
+                provider_token: '',
+                photo_url: 'https://via.placeholder.com/500x300/4F46E5/FFFFFF?text=Content+Manager+Bot',
+                need_name: false,
+                need_phone_number: false,
+                need_email: false,
+                need_shipping_address: false,
+                is_flexible: false
+            });
+            
+            await ctx.answerCbQuery();
+        } catch (secondError) {
+            console.error('❌ Ошибка при втором варианте инвойса:', secondError);
+            await ctx.answerCbQuery('❌ Ошибка при создании платежа');
+            await ctx.reply('❌ Произошла ошибка при создании платежа. Попробуйте позже.');
+        }
+    }
+});
+
+// Функция для правильного склонения месяцев
+function getMonthWord(months) {
+    if (months === 1) return 'месяц';
+    if (months >= 2 && months <= 4) return 'месяца';
+    return 'месяцев';
+}
+
+// Обработка успешных платежей (pre-checkout)
+bot.on('pre_checkout_query', async (ctx) => {
+    console.log('🔔 Pre-checkout query:', ctx.preCheckoutQuery);
+    
+    try {
+        const payload = JSON.parse(ctx.preCheckoutQuery.invoice_payload);
+        const plan = SUBSCRIPTION_PLANS[payload.plan];
+        
+        if (!plan) {
+            await ctx.answerPreCheckoutQuery(false, "Тариф не найден");
+            return;
+        }
+        
+        // Проверяем пользователя
+        const user = await User.findById(payload.userId);
+        if (!user) {
+            await ctx.answerPreCheckoutQuery(false, "Пользователь не найден");
+            return;
+        }
+        
+        // Все проверки пройдены
+        await ctx.answerPreCheckoutQuery(true);
+        
+    } catch (error) {
+        console.error('❌ Pre-checkout error:', error);
+        await ctx.answerPreCheckoutQuery(false, "Ошибка обработки платежа");
+    }
+});
+
+// Обработка успешных платежей
+bot.on('successful_payment', async (ctx) => {
+    console.log('💰 Successful payment:', ctx.message.successful_payment);
+    
+    try {
+        const payment = ctx.message.successful_payment;
+        const payload = JSON.parse(payment.invoice_payload);
+        
+        const { plan: planName, months, userId } = payload;
+        const plan = SUBSCRIPTION_PLANS[planName];
+        
+        if (!plan) {
+            console.error('❌ Plan not found:', planName);
+            await ctx.reply('❌ Ошибка: тариф не найден. Обратитесь в поддержку.');
+            return;
+        }
+        
+        // Находим пользователя
+        const user = await User.findById(userId);
+        if (!user) {
+            console.error('❌ User not found:', userId);
+            await ctx.reply('❌ Ошибка: пользователь не найден. Обратитесь в поддержку.');
+            return;
+        }
+        
+        // Рассчитываем дату окончания подписки
+        const startDate = new Date();
+        const endDate = new Date();
+        endDate.setMonth(endDate.getMonth() + months);
+        
+        // ОБНОВЛЯЕМ ПОДПИСКУ ПОЛЬЗОВАТЕЛЯ - ПРАВИЛЬНЫЕ ПОЛЯ
+        user.subscription.plan = planName;
+        user.subscription.startDate = startDate;
+        user.subscription.endDate = endDate;
+        user.subscription.isTrial = false;
+        user.subscription.isActive = true;
+        
+        // ОБНОВЛЯЕМ ЛИМИТЫ - ПРАВИЛЬНЫЕ ПОЛЯ ИЗ ВАШЕЙ МОДЕЛИ
+        user.limits.channels = plan.channels; // Максимальное количество каналов
+        user.limits.postsPerDay = plan.postsPerDay; // Лимит постов в день
+        user.limits.aiAccess = plan.aiAccess;
+        user.limits.scheduling = plan.scheduling;
+        
+        // Если нужно сбросить счетчик постов за сегодня при смене тарифа
+        user.limits.postsToday = 0;
+        user.limits.lastReset = new Date();
+        
+        // Сохраняем пользователя
+        await user.save();
+        
+        // Создаем запись о транзакции
+        const transaction = new Transaction({
+            userId: user._id,
+            telegramId: user.telegramId,
+            plan: planName,
+            months: months,
+            amount: payment.total_amount / 100, // Конвертируем обратно в звезды
+            currency: payment.currency,
+            providerPaymentChargeId: payment.telegram_payment_charge_id,
+            status: 'completed'
+        });
+        
+        await transaction.save();
+        
+        // Отправляем подтверждение пользователю
+        const message = `🎉 *Поздравляем! Подписка активирована!*
+
+✅ Тариф: *${plan.name}*
+⏱ Срок: *${months} ${getMonthWord(months)}*
+📅 До: *${endDate.toLocaleDateString('ru-RU')}*
+
+📊 Ваши новые возможности:
+• Каналов: *${user.limits.channels}* (было обновлено)
+• Постов в день: *${user.limits.postsPerDay}* (было обновлено)
+• AI-генерация: *${user.limits.aiAccess ? '✅ Доступна' : '❌ Недоступна'}*
+• Планировщик: *${user.limits.scheduling ? '✅ Доступен' : '❌ Недоступен'}*
+
+💫 Спасибо за покупку! Теперь вы можете полноценно использовать все функции бота.`;
+
+        await ctx.reply(message, { parse_mode: 'Markdown' });
+        
+        console.log(`✅ Подписка активирована для пользователя ${user.telegramId} на тариф ${planName}`);
+        console.log(`📊 Новые лимиты: ${user.limits.channels} каналов, ${user.limits.postsPerDay} постов/день`);
+        
+    } catch (error) {
+        console.error('❌ Payment processing error:', error);
+        await ctx.reply('❌ Произошла ошибка при активации подписки. Обратитесь в поддержку.');
+    }
+});
+
+// Обработка отмененных платежей (опционально)
+bot.on('shipping_query', async (ctx) => {
+    await ctx.answerShippingQuery(false, 'Доставка не требуется', []);
+});
+
+// Также добавьте обработку ошибок платежей
+bot.on('shipping_query_error', async (ctx) => {
+    console.error('Shipping query error:', ctx.shippingQuery);
+});
+
+// Добавьте эту функцию для форматирования даты
+function formatDate(date) {
+    return date.toLocaleDateString('ru-RU', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
+    });
+}
+
+
   bot.hears('⚙️ Система', async (ctx) => {
     if (!BOT_CONFIG.ADMIN_IDS.includes(ctx.from.id)) return;
 

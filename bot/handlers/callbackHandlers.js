@@ -1618,14 +1618,38 @@ bot.action('manage_channels', async (ctx) => {
   });
 
   // Настройки AI
-  bot.action(/ai_settings_(.+)/, async (ctx) => {
+bot.action(/ai_settings_(.+)/, async (ctx) => {
     const channelId = ctx.match[1];
     const channel = await Channel.findById(channelId);
 
     const message = `🤖 Настройки AI для: ${channel.title}\n\n` +
       `Текущий стиль: ${channel.aiSettings.tone}\n` +
       `Темы: ${channel.aiSettings.topics.join(', ') || 'не заданы'}\n\n` +
-      `Выберите стиль генерации:`;
+      `Выберите действие:`;
+
+    await ctx.editMessageText(message, {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '🎨 Стиль генерации', callback_data: `ai_style_menu_${channel._id}` },
+            { text: '📝 Настроить темы', callback_data: `ai_topics_setup_${channel._id}` }
+          ],
+          [
+            { text: '🔙 Назад', callback_data: `channel_detail_${channel._id}` }
+          ]
+        ]
+      }
+    });
+  });
+
+  // Меню выбора стиля AI
+bot.action(/ai_style_menu_(.+)/, async (ctx) => {
+    const channelId = ctx.match[1];
+    const channel = await Channel.findById(channelId);
+
+    const message = `🎨 Выберите стиль AI для: ${channel.title}\n\n` +
+      `Текущий стиль: ${channel.aiSettings.tone}\n\n` +
+      `Доступные стили:`;
 
     await ctx.editMessageText(message, {
       reply_markup: {
@@ -1639,56 +1663,39 @@ bot.action('manage_channels', async (ctx) => {
             { text: '🎯 Реклама', callback_data: `set_ai_tone_${channel._id}_advertising` }
           ],
           [
-            { text: '🎓 Образование', callback_data: `set_ai_tone_${channel._id}_educational` }
+            { text: '🎓 Образование', callback_data: `set_ai_tone_${channel._id}_educational` },
+            { text: '🎭 Креатив', callback_data: `set_ai_tone_${channel._id}_creative` }
           ],
           [
-            { text: '🔙 Назад', callback_data: `channel_detail_${channel._id}` }
+            { text: '🔙 Назад', callback_data: `ai_settings_${channel._id}` }
           ]
         ]
       }
     });
   });
 
-  // Смена стиля AI
-  bot.action(/set_ai_tone_(.+)_(.+)/, async (ctx) => {
+  // Настройка тем AI
+bot.action(/ai_topics_setup_(.+)/, async (ctx) => {
     const channelId = ctx.match[1];
-    const tone = ctx.match[2];
-
     const channel = await Channel.findById(channelId);
-    channel.aiSettings.tone = tone;
-    await channel.save();
 
-    await ctx.answerCbQuery(`✅ Стиль изменен на: ${tone}`);
-    await ctx.editMessageText(`✅ Стиль AI для канала "${channel.title}" изменен на: ${tone}`);
-  });
+    const message = `📝 Настройка тем AI для: ${channel.title}\n\n` +
+      `Текущие темы: ${channel.aiSettings.topics.join(', ') || 'не заданы'}\n\n` +
+      `Отправьте список тем через запятую.\n` +
+      `Пример: "технологии, программирование, IT новости"`;
 
-  // Запуск сцены генерации AI поста
-  bot.action(/ai_generate_(.+)/, async (ctx) => {
-    const channelId = ctx.match[1];
-
-    try {
-      const user = await UserService.getOrCreateUser(ctx.from);
-
-      if (!user.subscription.isTrial && !user.subscription.aiAccess) {
-        await ctx.answerCbQuery('❌ AI-генерация доступна только на платных тарифах');
-        return;
+    await ctx.editMessageText(message, {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '❌ Отмена', callback_data: `ai_settings_${channel._id}` }
+          ]
+        ]
       }
+    });
 
-      const canPost = await UserService.canUserPost(user);
-      if (!canPost) {
-        await ctx.answerCbQuery('❌ Вы достигли дневного лимита постов');
-        return;
-      }
-
-      await ctx.answerCbQuery();
-      await ctx.scene.enter('ai-post-scene', {
-        channelId: channelId,
-        user: user
-      });
-    } catch (error) {
-      console.error('Error entering AI scene:', error);
-      await ctx.answerCbQuery('❌ Ошибка при запуске генерации');
-    }
+    // Сохраняем ID канала в сессии для последующей обработки
+    ctx.session.pendingAiTopics = channelId;
   });
 
   // Статистика каналов

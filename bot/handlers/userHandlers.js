@@ -734,55 +734,55 @@ function setupUserHandlers(bot) {
     });
   });
 
-  // Настройки AI для канала
-  bot.action(/ai_settings_(.+)/, async (ctx) => {
-    const channelId = ctx.match[1];
-    const channel = await Channel.findById(channelId);
+  // // Настройки AI для канала
+  // bot.action(/ai_settings_(.+)/, async (ctx) => {
+  //   const channelId = ctx.match[1];
+  //   const channel = await Channel.findById(channelId);
 
-    const message = `🤖 Настройки AI для: ${channel.title}\n\n` +
-      `Текущий стиль: ${channel.aiSettings.tone}\n` +
-      `Темы: ${channel.aiSettings.topics.join(', ') || 'не заданы'}\n\n` +
-      `Выберите стиль генерации:`;
+  //   const message = `🤖 Настройки AI для: ${channel.title}\n\n` +
+  //     `Текущий стиль: ${channel.aiSettings.tone}\n` +
+  //     `Темы: ${channel.aiSettings.topics.join(', ') || 'не заданы'}\n\n` +
+  //     `Выберите стиль генерации:`;
 
-    await ctx.editMessageText(message, {
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: '💼 Проф', callback_data: `set_ai_tone_${channel._id}_professional` },
-            { text: '😄 Юмор', callback_data: `set_ai_tone_${channel._id}_humorous` }
-          ],
-          [
-            { text: '📰 Новости', callback_data: `set_ai_tone_${channel._id}_news` },
-            { text: '🎯 Реклама', callback_data: `set_ai_tone_${channel._id}_advertising` }
-          ],
-          [
-            { text: '🎓 Образование', callback_data: `set_ai_tone_${channel._id}_educational` }
-          ],
-          [
-            { text: '🔙 Назад', callback_data: `channel_detail_${channel._id}` }
-          ]
-        ]
-      }
-    });
-  });
+  //   await ctx.editMessageText(message, {
+  //     reply_markup: {
+  //       inline_keyboard: [
+  //         [
+  //           { text: '💼 Проф', callback_data: `set_ai_tone_${channel._id}_professional` },
+  //           { text: '😄 Юмор', callback_data: `set_ai_tone_${channel._id}_humorous` }
+  //         ],
+  //         [
+  //           { text: '📰 Новости', callback_data: `set_ai_tone_${channel._id}_news` },
+  //           { text: '🎯 Реклама', callback_data: `set_ai_tone_${channel._id}_advertising` }
+  //         ],
+  //         [
+  //           { text: '🎓 Образование', callback_data: `set_ai_tone_${channel._id}_educational` }
+  //         ],
+  //         [
+  //           { text: '🔙 Назад', callback_data: `channel_detail_${channel._id}` }
+  //         ]
+  //       ]
+  //     }
+  //   });
+  // });
 
-  // Смена стиля AI
-  bot.action(/set_ai_tone_(.+)_(.+)/, async (ctx) => {
-    const channelId = ctx.match[1];
-    const tone = ctx.match[2];
+  // // Смена стиля AI
+  // bot.action(/set_ai_tone_(.+)_(.+)/, async (ctx) => {
+  //   const channelId = ctx.match[1];
+  //   const tone = ctx.match[2];
 
-    const channel = await Channel.findById(channelId);
-    if (!channel) {
-      await ctx.answerCbQuery('❌ Канал не найден');
-      return;
-    }
+  //   const channel = await Channel.findById(channelId);
+  //   if (!channel) {
+  //     await ctx.answerCbQuery('❌ Канал не найден');
+  //     return;
+  //   }
 
-    channel.aiSettings.tone = tone;
-    await channel.save();
+  //   channel.aiSettings.tone = tone;
+  //   await channel.save();
 
-    await ctx.answerCbQuery(`✅ Стиль изменен на: ${tone}`);
-    await ctx.editMessageText(`✅ Стиль AI для канала "${channel.title}" изменен на: ${tone}`);
-  });
+  //   await ctx.answerCbQuery(`✅ Стиль изменен на: ${tone}`);
+  //   await ctx.editMessageText(`✅ Стиль AI для канала "${channel.title}" изменен на: ${tone}`);
+  // });
 
   // Настройки канала
   bot.action(/channel_settings_(.+)/, async (ctx) => {
@@ -884,28 +884,7 @@ function setupUserHandlers(bot) {
 После этого канал автоматически подключится к системе.`);
   });
 
-  // Тарифы
-  bot.hears('💎 Тарифы', async (ctx) => {
-    let message = `💎 Доступные тарифы:\n\n`;
-
-    Object.entries(SUBSCRIPTION_PLANS).forEach(([key, plan]) => {
-      if (key !== 'FREE' || ctx.user.subscription.isTrial) {
-        message += `🔸 *${plan.name}*\n`;
-        message += `Каналов: ${plan.channels}\n`;
-        message += `Постов в день: ${plan.postsPerDay}\n`;
-        message += `AI-генерация: ${plan.aiAccess ? '✅' : '❌'}\n`;
-        message += `Планировщик: ${plan.scheduling ? '✅' : '❌'}\n`;
-        message += `Цена: ${plan.price > 0 ? `${plan.price} звезд` : 'Бесплатно'}\n\n`;
-      }
-    });
-
-    if (ctx.user.subscription.isTrial) {
-      message += `🎁 У вас активен пробный период до ${new Date(ctx.user.subscription.trialEndDate).toLocaleDateString('ru-RU')}`;
-    }
-
-    await ctx.reply(message, { parse_mode: 'Markdown' });
-  });
-
+ 
   // Статистика каналов
   bot.action('channel_stats', async (ctx) => {
     const channels = await Channel.find({ owner: ctx.user._id });
