@@ -217,139 +217,141 @@ function setupUserHandlers(bot) {
   });
 
   // Обработка ввода времени расписания
-  bot.on('text', async (ctx) => {
-    if (ctx.session && ctx.session.waitingForScheduleTime) {
-      console.log('🕒 Processing schedule time input:', {
-        session: ctx.session,
-        input: ctx.message.text,
-        channelId: ctx.session.scheduleChannelId
-      });
+  // bot.on('text', async (ctx) => {
+    
+  //   console.log(`2`);
+  //   if (ctx.session && ctx.session.waitingForScheduleTime) {
+  //     console.log('🕒 Processing schedule time input:', {
+  //       session: ctx.session,
+  //       input: ctx.message.text,
+  //       channelId: ctx.session.scheduleChannelId
+  //     });
 
-      const input = ctx.message.text.trim();
+  //     const input = ctx.message.text.trim();
 
-      if (input.toLowerCase() === 'отмена') {
-        delete ctx.session.waitingForScheduleTime;
-        delete ctx.session.scheduleChannelId;
-        await ctx.reply('❌ Настройка расписания отменена');
-        return;
-      }
+  //     if (input.toLowerCase() === 'отмена') {
+  //       delete ctx.session.waitingForScheduleTime;
+  //       delete ctx.session.scheduleChannelId;
+  //       await ctx.reply('❌ Настройка расписания отменена');
+  //       return;
+  //     }
 
-      const times = input.split(',').map(t => t.trim());
-      const validTimes = [];
-      const invalidTimes = [];
+  //     const times = input.split(',').map(t => t.trim());
+  //     const validTimes = [];
+  //     const invalidTimes = [];
 
-      // Валидация времени
-      for (const time of times) {
-        if (/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/.test(time)) {
-          validTimes.push(time);
-        } else {
-          invalidTimes.push(time);
-        }
-      }
+  //     // Валидация времени
+  //     for (const time of times) {
+  //       if (/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/.test(time)) {
+  //         validTimes.push(time);
+  //       } else {
+  //         invalidTimes.push(time);
+  //       }
+  //     }
 
-      if (validTimes.length === 0) {
-        await ctx.reply('❌ Неверный формат времени. Используйте ЧЧ:MM (например, 09:00)');
-        return;
-      }
+  //     if (validTimes.length === 0) {
+  //       await ctx.reply('❌ Неверный формат времени. Используйте ЧЧ:MM (например, 09:00)');
+  //       return;
+  //     }
 
-      const channel = await Channel.findById(ctx.session.scheduleChannelId);
-      if (!channel) {
-        await ctx.reply('❌ Канал не найден');
-        return;
-      }
+  //     const channel = await Channel.findById(ctx.session.scheduleChannelId);
+  //     if (!channel) {
+  //       await ctx.reply('❌ Канал не найден');
+  //       return;
+  //     }
 
-      console.log('📋 Channel before update:', {
-        title: channel.title,
-        settings: channel.settings,
-        hasSchedule: !!(channel.settings?.schedule)
-      });
+  //     console.log('📋 Channel before update:', {
+  //       title: channel.title,
+  //       settings: channel.settings,
+  //       hasSchedule: !!(channel.settings?.schedule)
+  //     });
 
-      // Инициализируем settings и schedule если их нет (теперь внутри settings)
-      if (!channel.settings) {
-        channel.settings = {
-          mode: 'combined',
-          autoPublish: true,
-          schedule: {
-            enabled: false,
-            times: []
-          }
-        };
-      } else if (!channel.settings.schedule) {
-        channel.settings.schedule = {
-          enabled: false,
-          times: []
-        };
-      }
+  //     // Инициализируем settings и schedule если их нет (теперь внутри settings)
+  //     if (!channel.settings) {
+  //       channel.settings = {
+  //         mode: 'combined',
+  //         autoPublish: true,
+  //         schedule: {
+  //           enabled: false,
+  //           times: []
+  //         }
+  //       };
+  //     } else if (!channel.settings.schedule) {
+  //       channel.settings.schedule = {
+  //         enabled: false,
+  //         times: []
+  //       };
+  //     }
 
-      // Безопасная работа с times (теперь внутри settings.schedule)
-      const schedule = channel.settings.schedule;
-      const existingTimes = new Set(schedule.times || []);
-      const beforeCount = existingTimes.size;
-      validTimes.forEach(time => existingTimes.add(time));
-      const afterCount = existingTimes.size;
+  //     // Безопасная работа с times (теперь внутри settings.schedule)
+  //     const schedule = channel.settings.schedule;
+  //     const existingTimes = new Set(schedule.times || []);
+  //     const beforeCount = existingTimes.size;
+  //     validTimes.forEach(time => existingTimes.add(time));
+  //     const afterCount = existingTimes.size;
       
-      schedule.times = Array.from(existingTimes).sort();
+  //     schedule.times = Array.from(existingTimes).sort();
 
-      console.log('📝 Times update:', {
-        validTimes,
-        beforeCount,
-        afterCount,
-        finalTimes: schedule.times
-      });
+  //     console.log('📝 Times update:', {
+  //       validTimes,
+  //       beforeCount,
+  //       afterCount,
+  //       finalTimes: schedule.times
+  //     });
 
-      try {
-        await channel.save();
-        console.log('💾 Channel saved successfully');
+  //     try {
+  //       await channel.save();
+  //       console.log('💾 Channel saved successfully');
         
-        let message = `✅ Время добавлено в расписание:\n` +
-          validTimes.map(t => `🕒 ${t}`).join('\n');
+  //       let message = `✅ Время добавлено в расписание:\n` +
+  //         validTimes.map(t => `🕒 ${t}`).join('\n');
 
-        if (invalidTimes.length > 0) {
-          message += `\n\n❌ Некорректное время (игнорировано): ${invalidTimes.join(', ')}`;
-        }
+  //       if (invalidTimes.length > 0) {
+  //         message += `\n\n❌ Некорректное время (игнорировано): ${invalidTimes.join(', ')}`;
+  //       }
 
-        // Сбрасываем состояние
-        delete ctx.session.waitingForScheduleTime;
-        delete ctx.session.scheduleChannelId;
+  //       // Сбрасываем состояние
+  //       delete ctx.session.waitingForScheduleTime;
+  //       delete ctx.session.scheduleChannelId;
 
-        await ctx.reply(message);
+  //       await ctx.reply(message);
 
-        // Показываем обновленное расписание
-        const scheduleText = schedule.times.length > 0 ?
-          schedule.times.map(time => `🕒 ${time}`).join('\n') :
-          '❌ Расписание не настроено';
+  //       // Показываем обновленное расписание
+  //       const scheduleText = schedule.times.length > 0 ?
+  //         schedule.times.map(time => `🕒 ${time}`).join('\n') :
+  //         '❌ Расписание не настроено';
 
-        await ctx.reply(`📅 Текущее расписание:\n${scheduleText}\n\nСтатус: ${schedule.enabled ? '✅ Включено' : '❌ Выключено'}`);
+  //       await ctx.reply(`📅 Текущее расписание:\n${scheduleText}\n\nСтатус: ${schedule.enabled ? '✅ Включено' : '❌ Выключено'}`);
 
-      } catch (error) {
-        console.error('❌ Error saving channel:', error);
-        await ctx.reply('❌ Ошибка при сохранении расписания');
-        return;
-      }
+  //     } catch (error) {
+  //       console.error('❌ Error saving channel:', error);
+  //       await ctx.reply('❌ Ошибка при сохранении расписания');
+  //       return;
+  //     }
 
-    } else if (ctx.session && ctx.session.waitingForAITopic) {
-      // Обработка текста для AI
-      const topic = ctx.message.text;
-      const tone = ctx.session.aiTone || 'professional';
-      const postType = ctx.session.postType || 'news';
+  //   } else if (ctx.session && ctx.session.waitingForAITopic) {
+  //     // Обработка текста для AI
+  //     const topic = ctx.message.text;
+  //     const tone = ctx.session.aiTone || 'professional';
+  //     const postType = ctx.session.postType || 'news';
 
-      await ctx.reply('🔄 Генерирую пост...');
+  //     await ctx.reply('🔄 Генерирую пост...');
 
-      try {
-        const post = await AIService.generatePost(topic, tone, postType);
+  //     try {
+  //       const post = await AIService.generatePost(topic, tone, postType);
 
-        await ctx.reply(`✅ Сгенерированный пост (${POST_TYPES[postType].name}):\n\n${post}\n\nВы можете скопировать этот текст и опубликовать в вашем канале.`);
+  //       await ctx.reply(`✅ Сгенерированный пост (${POST_TYPES[postType].name}):\n\n${post}\n\nВы можете скопировать этот текст и опубликовать в вашем канале.`);
 
-        // Сбрасываем состояние
-        delete ctx.session.waitingForAITopic;
-        delete ctx.session.aiTone;
-        delete ctx.session.postType;
+  //       // Сбрасываем состояние
+  //       delete ctx.session.waitingForAITopic;
+  //       delete ctx.session.aiTone;
+  //       delete ctx.session.postType;
 
-      } catch (error) {
-        await ctx.reply('❌ Произошла ошибка при генерации поста. Попробуйте позже.');
-      }
-    }
-  });
+  //     } catch (error) {
+  //       await ctx.reply('❌ Произошла ошибка при генерации поста. Попробуйте позже.');
+  //     }
+  //   }
+  // });
 
   // Очистка расписания
   bot.action(/schedule_clear_(.+)/, async (ctx) => {
@@ -734,6 +736,7 @@ function setupUserHandlers(bot) {
     });
   });
 
+  
   // // Настройки AI для канала
   // bot.action(/ai_settings_(.+)/, async (ctx) => {
   //   const channelId = ctx.match[1];

@@ -513,6 +513,7 @@ function setupChannelHandlers(bot) {
 
   // Обработка текстовых сообщений для настроек
   bot.on('text', async (ctx) => {
+    console.log(`3`);
     if (!ctx.session) return;
 
     if (ctx.session.waitingForScheduleTimes && ctx.session.editingChannelId) {

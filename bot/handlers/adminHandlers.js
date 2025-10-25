@@ -837,7 +837,58 @@ bot.on('successful_payment', async (ctx) => {
         await ctx.reply('❌ Произошла ошибка при активации подписки. Обратитесь в поддержку.');
     }
 });
+// // Настройка тем AI
+//   bot.action(/ai_topics_setup_(.+)/, async (ctx) => {
+//     const channelId = ctx.match[1];
+//     const channel = await Channel.findById(channelId);
 
+//     const message = `📝 Настройка тем AI для: ${channel.title}\n\n` +
+//       `Текущие темы: ${channel.aiSettings.topics.join(', ') || 'не заданы'}\n\n` +
+//       `Отправьте список тем через запятую.\n` +
+//       `Пример: "технологии, программирование, IT новости"`;
+
+//     await ctx.editMessageText(message, {
+//       reply_markup: {
+//         inline_keyboard: [
+//           [
+//             { text: '❌ Отмена', callback_data: `ai_settings_${channel._id}` }
+//           ]
+//         ]
+//       }
+//     });
+
+//     // Сохраняем ID канала в сессии для последующей обработки
+//     ctx.session.pendingAiTopics = channelId;
+//   });
+
+//   // Запуск сцены генерации AI поста
+//   bot.action(/ai_generate_(.+)/, async (ctx) => {
+//     const channelId = ctx.match[1];
+
+//     try {
+//       const user = await UserService.getOrCreateUser(ctx.from);
+
+//       if (!user.subscription.isTrial && !user.subscription.aiAccess) {
+//         await ctx.answerCbQuery('❌ AI-генерация доступна только на платных тарифах');
+//         return;
+//       }
+
+//       const canPost = await UserService.canUserPost(user);
+//       if (!canPost) {
+//         await ctx.answerCbQuery('❌ Вы достигли дневного лимита постов');
+//         return;
+//       }
+
+//       await ctx.answerCbQuery();
+//       await ctx.scene.enter('ai-post-scene', {
+//         channelId: channelId,
+//         user: user
+//       });
+//     } catch (error) {
+//       console.error('Error entering AI scene:', error);
+//       await ctx.answerCbQuery('❌ Ошибка при запуске генерации');
+//     }
+//   });
 // Обработка отмененных платежей (опционально)
 bot.on('shipping_query', async (ctx) => {
     await ctx.answerShippingQuery(false, 'Доставка не требуется', []);

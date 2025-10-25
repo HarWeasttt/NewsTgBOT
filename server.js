@@ -304,15 +304,15 @@ class Application {
 
     const setupAllHandlers = async () => {
       try {
-        console.log('🔄 Подключение adminHandlers...');
-        await setupAdminHandlers(this.bot);
         console.log('🔄 Подключение userHandlers...');
         await setupUserHandlers(this.bot);
+        console.log('🔄 Подключение callbackHandlers...');
+        await setupCallbackHandlers(this.bot);
+        console.log('🔄 Подключение adminHandlers...');
+        await setupAdminHandlers(this.bot);
 
         console.log('🔄 Подключение channelHandlers...');
         await setupChannelHandlers(this.bot);
-        console.log('🔄 Подключение callbackHandlers...');
-        await setupCallbackHandlers(this.bot);
 
         console.log('✅ Все обработчики подключены');
       } catch (error) {
