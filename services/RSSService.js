@@ -431,19 +431,14 @@ class RssService {
                 content += `${truncated}\n\n`;
             }
 
-            // Добавляем хештеги если включено
-            if (channel.settings.postSettings?.addHashtags) {
-                content += `#новости #автопостинг\n`;
-            }
+            // // Добавляем хештеги если включено
+            // if (channel.settings.postSettings?.addHashtags) {
+            //     content += `#новости #автопостинг\n`;
+            // }
 
             // Добавляем водяной знак если есть
             if (channel.settings.postSettings?.watermark) {
                 content += `\n${channel.settings.postSettings.watermark}`;
-            }
-
-            // Добавляем ссылку на источник
-            if (item.link) {
-                content += `\n\n🔗 Источник: ${item.link}`;
             }
 
             return content.trim();

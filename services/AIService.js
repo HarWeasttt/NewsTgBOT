@@ -39,7 +39,7 @@ class AIService {
       return completion.choices[0]?.message?.content || 'Не удалось сгенерировать контент.';
     } catch (error) {
       console.error('AI Generation error:', error);
-      return 'Произошла ошибка при генерации контента. Попробуйте позже.';
+      return '';
     }
   }
 

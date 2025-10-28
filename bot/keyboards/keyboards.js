@@ -1,7 +1,7 @@
 const userMainKeyboard = {
   keyboard: [
     [{ text: '📊 Мои каналы' }, { text: '⚙️ Настройки' }],
-    [{ text: '🤖 AI Генерация' }, { text: '📰 RSS Ленты' }],
+    // [{ text: '🤖 AI Генерация' }, { text: '📰 RSS Ленты' }],
     [{ text: '💎 Тарифы' }, { text: '🆘 Помощь' }]
   ],
   resize_keyboard: true
@@ -18,21 +18,19 @@ const adminMainKeyboard = {
 };
 
 const postTypesKeyboard = {
-  reply_markup: {
-    inline_keyboard: [
-      [
-        { text: '📰 Новости', callback_data: 'post_type_news' },
-        { text: '📝 Статья', callback_data: 'post_type_article' }
-      ],
-      [
-        { text: '💡 Советы', callback_data: 'post_type_tips' },
-        { text: '🎯 Реклама', callback_data: 'post_type_promotional' }
-      ],
-      [
-        { text: '🎭 Развлечения', callback_data: 'post_type_entertainment' }
-      ]
+  inline_keyboard: [
+    [
+      { text: '📰 Новости', callback_data: 'post_type_news' },
+      { text: '📝 Статья', callback_data: 'post_type_article' }
+    ],
+    [
+      { text: '💡 Советы', callback_data: 'post_type_tips' },
+      { text: '🎯 Реклама', callback_data: 'post_type_promotional' }
+    ],
+    [
+      { text: '🎭 Развлечения', callback_data: 'post_type_entertainment' }
     ]
-  }
+  ]
 };
 // Инлайн-клавиатуры для callback обработчиков
 const adminInlineKeyboard = {

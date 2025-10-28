@@ -297,31 +297,14 @@ class Application {
   setupHandlers() {
     console.log('🔧 Регистрация обработчиков...');
 
-    const setupCallbackHandlers = require('./bot/handlers/callbackHandlers');
-    const setupAdminHandlers = require('./bot/handlers/adminHandlers');
-    const setupUserHandlers = require('./bot/handlers/userHandlers');
-    const setupChannelHandlers = require('./bot/handlers/channelHandlers');
+    // Импортируем ОДИН объединенный файл со всеми обработчиками
+    const setupAllHandlers = require('./bot/handlers/AllHandlers');
+    
+    // Подключаем все обработчики
+    setupAllHandlers(this.bot);
 
-    const setupAllHandlers = async () => {
-      try {
-        console.log('🔄 Подключение userHandlers...');
-        await setupUserHandlers(this.bot);
-        console.log('🔄 Подключение callbackHandlers...');
-        await setupCallbackHandlers(this.bot);
-        console.log('🔄 Подключение adminHandlers...');
-        await setupAdminHandlers(this.bot);
-
-        console.log('🔄 Подключение channelHandlers...');
-        await setupChannelHandlers(this.bot);
-
-        console.log('✅ Все обработчики подключены');
-      } catch (error) {
-        console.error('❌ Ошибка при подключении обработчиков:', error);
-      }
-    };
-
-    setupAllHandlers();
-  }
+    console.log('✅ Все обработчики подключены');
+}
 
   /**
    * Настройка фоновых задач (cron jobs)
