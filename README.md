@@ -1,284 +1,72 @@
 # Telegram Content Manager Bot
 
-Универсальный бот для управления контентом и AI-генерации постов в Telegram каналах.
+A Telegram bot that runs content for Telegram channels: it pulls news from RSS feeds, writes posts with OpenAI, publishes them on a schedule and limits usage by subscription plan.
 
-## Функциональность
+Built with **Node.js, Telegraf, MongoDB (Mongoose), Redis + Bull, OpenAI API, node-cron, Winston**.
 
-- 🤖 AI-генерация постов (OpenAI GPT-4)
-- 📰 Автопостинг из RSS-лент
-- ⏰ Планировщик публикаций
-- 💰 Монетизация через Telegram Stars
-- 🛠 Админ-панель в Telegram
-- 📊 Статистика и аналитика
+> Документация на русском: [README.ru.md](README.ru.md)
 
-## Установка
+## Features
 
-1. Клонируйте репозиторий
-2. Установите зависимости:
+- **AI post generation** with the OpenAI API: configurable tone and post type per channel.
+- **RSS auto-posting:** feeds are polled on a schedule, new items are turned into posts and queued for publishing.
+- **Publishing queue** on Bull + Redis: posts are published by a background worker that checks the user's daily limit before each post.
+- **Scheduler:** per-channel publishing times, cron jobs for polling and a daily reset of limits.
+- **Subscription plans** (Free / Start / Pro / Agency) with limits on channels, posts per day and AI access; payments are stored as transactions in MongoDB.
+- **Admin panel inside Telegram:** user and AI usage statistics, creating and editing subscription plans.
+- **Multi-step dialogs** built with Telegraf scenes (RSS setup, AI post, plan editing).
+- **Logging** with Winston to files, plus maintenance scripts (backup, stats, queue and Redis checks).
+
+## Architecture
+
+```
+Telegram ──► Telegraf bot (handlers, scenes, keyboards)
+                  │
+                  ▼
+             Services ── UserService, PaymentService, AIService, RSSService,
+                  │       AutoPostService, ConfigService, LogService
+                  │
+       ┌──────────┼──────────────┐
+       ▼          ▼              ▼
+   MongoDB    Bull queue      OpenAI API
+ (users,     (Redis) ──► worker publishes posts to channels
+ channels,
+ transactions)
+```
+
+```
+├── server.js        # app entry: DB connection, bot setup, cron jobs
+├── config/          # bot settings, subscription plans, AI tones and prompts
+├── models/          # Mongoose models: User, Channel, Transaction
+├── services/        # business logic
+├── bot/
+│   ├── handlers/    # user, admin, channel and callback handlers
+│   ├── scenes/      # multi-step dialogs (Telegraf Scenes)
+│   └── keyboards/   # inline and reply keyboards
+├── queues/          # Bull queue for post publishing
+├── scripts/         # setup, backup, stats, Redis and queue utilities
+└── utils/           # Winston logger
+```
+
+## Getting started
+
+Requirements: Node.js 18+, MongoDB, Docker (for Redis).
+
 ```bash
+git clone https://github.com/HarWeasttt/NewsTgBOT.git
+cd NewsTgBOT
 npm install
-
-
-##==============================
-## 📁 Структура проекта и ответственность файлов
-
-### **🎯 Корневая директория**
-
-```
-telegram-content-bot/
-├── 📁 config/           - Конфигурация приложения
-├── 📁 models/           - Модели базы данных MongoDB
-├── 📁 services/         - Бизнес-логика и сервисы
-├── 📁 bot/              - Логика Telegram бота
-├── 📁 queues/           - Система очередей (Bull/Redis)
-├── 📁 scripts/          - Вспомогательные скрипты
-├── 📁 temp/             - Временные файлы
-├── 🗎 .env              - Переменные окружения
-├── 🗎 package.json      - Зависимости и скрипты
-├── 🗎 server.js         - Главный файл приложения
-└── 🗎 README.md         - Документация
+cp .env.example .env      # fill in your bot token, MongoDB URI and OpenAI key
+docker compose up -d      # starts Redis (and Redis Commander on :8081)
+npm start                 # or: npm run dev (nodemon)
 ```
 
-### **🔧 Конфигурация (`/config/`)**
+## Environment variables
 
-**`index.js`** - Централизованная конфигурация приложения
-```javascript
-// Отвечает за:
-• Настройки бота (токен, ID админов)
-• Тарифные планы (FREE, START, PRO, AGENCY)
-• Настройки AI (тональности, стили)
-• Параметры подключения к БД и Redis
-```
-
-### **🗄️ Модели данных (`/models/`)**
-
-**`User.js`** - Модель пользователя
-```javascript
-// Отвечает за:
-• Данные пользователя (telegramId, username, имя)
-• Информацию о подписке (тариф, пробный период, даты)
-• Лимиты (каналы, посты в день)
-• Настройки пользователя (язык, тон AI)
-```
-
-**`Channel.js`** - Модель канала
-```javascript
-// Отвечает за:
-• Данные Telegram канала (ID, название, username)
-• Настройки канала (режим работы, автопостинг)
-• RSS источники (URL, фильтры ключевых слов)
-• Настройки AI (темы, стиль генерации)
-```
-
-**`Transaction.js`** - Модель транзакций
-```javascript
-// Отвечает за:
-• Платежи пользователей (сумма, валюта, статус)
-• Информацию о подписках (тариф, период)
-• ID платежей Telegram Stars
-```
-
-### **⚙️ Сервисы (`/services/`)**
-
-**`UserService.js`** - Сервис работы с пользователями
-```javascript
-// Отвечает за:
-• Регистрацию и получение пользователей
-• Проверку лимитов и возможностей
-• Управление подписками
-• Сброс дневных счетчиков
-```
-
-**`AIService.js`** - Сервис AI-генерации
-```javascript
-// Отвечает за:
-• Интеграцию с OpenAI API
-• Генерацию постов по темам и стилям
-• Учет статистики использования
-• Управление промптами и настройками
-```
-
-**`RSSService.js`** - Сервис работы с RSS
-```javascript
-// Отвечает за:
-• Парсинг RSS лент
-• Фильтрацию контента по ключевым словам
-• Автоматическую публикацию новостей
-• Обработку новых статей
-```
-
-**`PaymentService.js`** - Сервис платежей
-```javascript
-// Отвечает за:
-• Интеграцию с Telegram Stars
-• Создание счетов и обработку платежей
-• Обновление подписок после оплаты
-• Финансовую статистику
-```
-
-### **🤖 Логика бота (`/bot/`)**
-
-#### **Обработчики (`/bot/handlers/`)**
-
-**`commandHandlers.js`** - Обработчики команд
-```javascript
-// Отвечает за:
-• /start - регистрация и приветствие
-• /admin - вход в админ-панель
-• /help - справка по боту
-• /stats - персональная статистика
-```
-
-**`userHandlers.js`** - Обработчики пользовательского меню
-```javascript
-// Отвечает за:
-• Кнопки главного меню (Мои каналы, AI Генерация и т.д.)
-• Текстовые сообщения (ввод тем для AI)
-• Базовую навигацию по интерфейсу
-```
-
-**`adminHandlers.js`** - Обработчики админ-панели
-```javascript
-// Отвечает за:
-• Кнопки админ-меню (Статистика, Пользователи и т.д.)
-• Управление пользователями (блокировка, смена тарифов)
-• Финансовые отчеты и экспорт данных
-• Системные настройки
-```
-
-**`channelHandlers.js`** - Обработчики работы с каналами
-```javascript
-// Отвечает за:
-• Подключение новых каналов (пересылка сообщений)
-• Настройку режимов работы каналов
-• Валидацию прав бота в каналах
-```
-
-**`callbackHandlers.js`** - Обработчики inline кнопок
-```javascript
-// Отвечает за:
-• Все callback_data от inline клавиатур
-• Навигацию по меню (назад, главное меню)
-• Обработку действий (добавить RSS, сменить режим)
-• Ответы на нажатия кнопок
-```
-
-#### **Сцены (`/bot/scenes/`)**
-
-**`rssSetupScene.js`** - Сцена настройки RSS
-```javascript
-// Отвечает за:
-• Многошаговый процесс добавления RSS
-• Валидацию URL RSS лент
-• Настройку фильтров ключевых слов
-• Сохранение источников в базу
-```
-
-**`aiPostScene.js`** - Сцена создания AI поста
-```javascript
-// Отвечает за:
-• Выбор стиля поста
-• Ввод темы для генерации
-• Планирование публикации
-• Редактирование сгенерированного контента
-```
-
-#### **Клавиатуры (`/bot/keyboards/`)**
-
-**`keyboards.js`** - Шаблоны клавиатур
-```javascript
-// Отвечает за:
-• Главное меню пользователя
-• Админ-панель
-• Inline клавиатуры для разных сценариев
-• Кнопки выбора стилей AI
-```
-
-### **🔄 Очереди (`/queues/`)**
-
-**`PostQueue.js`** - Очередь публикации постов
-```javascript
-// Отвечает за:
-• Отложенную публикацию постов
-• Обработку ошибок при отправке
-• Управление лимитами пользователей
-• Интеграцию с Redis/Bull
-```
-
-### **📊 Главные файлы**
-
-**`server.js`** - Ядро приложения
-```javascript
-// Отвечает за:
-• Инициализацию и запуск бота
-• Подключение к MongoDB и Redis
-• Настройку middleware и обработчиков
-• Запуск cron-задач (сброс лимитов, RSS)
-• Обработку ошибок и graceful shutdown
-```
-
-**`.env`** - Конфигурация окружения
-```javascript
-// Отвечает за:
-• BOT_TOKEN - токен Telegram бота
-• ADMIN_IDS - ID администраторов через запятую
-• OPENAI_API_KEY - ключ OpenAI API
-• MONGODB_URI - строка подключения к MongoDB
-• REDIS_URL - строка подключения к Redis
-```
-
-### **🛠️ Вспомогательные скрипты (`/scripts/`)**
-
-**`setup.js`** - Первоначальная настройка
-```javascript
-// Отвечает за:
-• Создание индексов в базе данных
-• Проверку подключений
-• Базовая валидация конфигурации
-```
-
-**`migrations.js`** - Миграции базы данных
-```javascript
-// Отвечает за:
-• Обновление структуры базы данных
-• Перенос данных между версиями
-• Создание служебных коллекций
-```
-
-**`backup.js`** - Резервное копирование
-```javascript
-// Отвечает за:
-• Создание бэкапов MongoDB
-• Очистку старых бэкапов
-• Восстановление данных
-```
-
-### **🎯 Поток данных в приложении**
-
-```
-Пользователь → 
-Telegram Update → 
-server.js (маршрутизация) → 
-commandHandlers (если команда) → 
-callbackHandlers (если callback) → 
-scenes (если многошаговый процесс) → 
-userHandlers/adminHandlers (текстовые сообщения) → 
-Services (бизнес-логика) → 
-Models (работа с БД) → 
-Queues (отложенные задачи) → 
-Ответ пользователю
-```
-
-### **🔍 Поиск проблем**
-
-Если что-то не работает:
-
-1. **Команды не работают** → `commandHandlers.js`
-2. **Кнопки не реагируют** → `callbackHandlers.js` 
-3. **Не сохраняются данные** → `models/` + проверка MongoDB
-4. **AI не генерирует** → `AIService.js` + проверка OpenAI ключа
-5. **RSS не парсится** → `RSSService.js`
-6. **Админ-панель недоступна** → `adminHandlers.js` + проверка ADMIN_IDS
-7. **Ошибки базы данных** → `server.js` (подключение) + `models/`
-
-Каждый файл имеет четкую зону ответственности, что упрощает отладку и развитие проекта!
+| Variable | Description |
+|---|---|
+| `BOT_TOKEN` | Telegram bot token from @BotFather |
+| `ADMIN_IDS` | Comma-separated Telegram user IDs with admin access |
+| `MONGODB_URI` | MongoDB connection string |
+| `REDIS_URL` | Redis connection string, default `redis://localhost:6379` |
+| `OPENAI_API_KEY` | OpenAI API key for AI post generation |
